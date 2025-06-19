@@ -10,12 +10,13 @@ Andrés Megías
 """
 
 # Configuration file.
-config_file = 'NIR38.yaml'  # NIR38, J110621
+config_file = 'NIR38.yaml'
 
 # Libraries.
 import os
 import sys
 import yaml
+import platform
 import numpy as np
 import richvalues as rv
 import matplotlib.pyplot as plt
@@ -53,6 +54,8 @@ h = planck_constant = 6.626e-34  # J*s
 kB = boltzmann_constant = 1.381e-23  # J/K 
 c = light_speed = 2.998e8  # m/s
 
+sep = '\\' if platform.system() == 'Windows' else '/'  # folder separator
+
 #%% Initial options.
 
 print('------------------------------------------')
@@ -62,10 +65,10 @@ print('Pre-processing module 2 - Continuum fit')
 print()
 
 # Configuration file. 
-config_path = './' + config_file if len(sys.argv) == 1 else sys.argv[1]
-name = config_path.replace('.yaml', '').replace('./', '').replace('.', '')
+config_path = config_file if len(sys.argv) == 1 else sys.argv[1]
+name = config_path.replace('.yaml', '')
 config_path = os.path.realpath(config_path)
-config_folder = '/'.join(config_path.split('/')[:-1]) + '/'
+config_folder = sep.join(config_path.split(sep)[:-1]) + sep
 os.chdir(config_folder)
 if os.path.isfile(config_path):
     with open(config_path) as file:
@@ -77,24 +80,38 @@ else:
 folder = config['parent folder'] if 'parent folder' in config else '' 
 figsize = config['figure size'] if 'figure size' in config else (9., 7.)
 options = config['continuum fit']
-file = options['input file']
-folder += '/'.join(file.split('/')[:-1])
-file = file.split('/')[-1]
-log_fit = options['logarithmic fit'] if 'logairthmic fit' in options else True
+input_file = options['input file']
+comment_char = (options['comment character in input file']
+                if 'comment character in input file' in options else '#')
+column_inds = (options['column indices'] if 'column indices' in options
+               else {'x': 1, 'y': 2, 'y unc.': 3})
+spectral_variable = (options['spectral variable'] if 'spectral variable'
+                     in options else 'wavelength (μm)')
+log_fit = options['logarithmic fit'] if 'logarithmic fit' in options else False
 color = options['fit color'] if 'fit color' in options else 'palevioletred'
 fits = options['fits']
-use_accurate_uncs = (options['estimate accurate uncertainties'] if
-                     'estimate accurate uncertainties' in options else True)
+use_accurate_uncs = (options['calculate accurate uncertainties'] if
+                     'calculate accurate uncertainties' in options else True)
 show_approx_uncs = (options['show approximate uncertainties'] if
                     'show approximate uncertainties' in options else False)
+output_file = options['output file']
 if not use_accurate_uncs:
     show_approx_uncs = False
+idx_x, idx_y = column_inds['x'] - 1, column_inds['y'] - 1
+idx_dy = column_inds['y unc.'] - 1 if 'y unc.' in column_inds else None
 
 #%% Reading of data and continuum fit.
 
 # Data.
-data = np.loadtxt('{}/{}'.format(folder, file))
-wavelength, flux, flux_unc = data.transpose()
+data = np.loadtxt(os.path.join(folder, input_file), comments=comment_char)
+x = data[:,idx_x]
+y = data[:,idx_y]
+dy = data[:, idx_dy] if idx_dy is not None else np.zeros(len(y))
+if spectral_variable == 'wavenumber (/cm)':
+    x = 1e4 / x
+wavelength = x
+flux = y
+flux_unc = dy
 mask = flux > 0.
 wavelength = wavelength[mask]
 flux = flux[mask]
@@ -103,7 +120,7 @@ wavenumber = 1e4 / wavelength
 continuous, all_regions = [], []
 
 # Separate fits.
-for (i, fit) in enumerate(fits):
+for fit in fits:
     fit_type = list(fit.keys())[0]
     params = fit[fit_type]
     if fit_type in ('polynomial', 'black body'):
@@ -129,9 +146,27 @@ for (i, fit) in enumerate(fits):
         flux_mask = flux[mask]
         all_regions += regions
     elif fit_type == 'continuum file':
-        params = fit
-        cont_file = '../' + params['continuum file']
-        cont_data = np.loadtxt(cont_file)
+        cont_file = params['file']
+        comment_char = (params['comment character in continuum file'] if
+                     'comment character in continuum file' in params else '#')
+        column_inds = (params['column indices'] if 'column indices' in params
+                       else {'x': 1, 'y': 2})
+        scale_factor = (float(params['scale factor'])
+                        if 'scale factor' in params else 1.)
+        cont_data = np.loadtxt(os.path.join(folder, cont_file),
+                               comments=comment_char)
+        idx_x, idx_y = column_inds['x'] - 1, column_inds['y'] - 1
+        cont_wavelength = cont_data[:,idx_x]
+        cont_flux = cont_data[:,idx_y] * scale_factor
+        if 'description' in params:
+            for fit in params['description']:
+                fit_type_ = list(fit.keys())[0]
+                params_ = fit[fit_type_]
+                if 'fit regions (μm)' in params_:
+                    regions = params_['fit regions (μm)']
+                elif 'fit regions (/cm)' in params_:
+                    regions = params_['fit regions (/cm)']
+                all_regions += regions
     if fit_type == 'polynomial':
         order = int(params['order'])
         guess = np.zeros(order+1)
@@ -152,10 +187,19 @@ for (i, fit) in enumerate(fits):
         cont_flux = fit_function(cont_wavelength, *params)
         if fit_type == 'polynomial' and log_fit:
             cont_flux = np.exp(cont_flux)
-        cont_data = np.array([cont_wavelength, cont_flux]).T
+    cont_data = np.array([cont_wavelength, cont_flux]).T
     continuous += [cont_data]
-
+    
 # Merging.
+wavenumber_ = wavenumber.copy()
+flux_ = flux.copy()
+flux_unc_ = flux_unc.copy()
+mask = ((wavelength >= cont_wavelength[0])
+        & (wavelength <= cont_wavelength[-1]))
+wavelength = wavelength[mask]
+wavenumber = wavenumber[mask]
+flux = flux[mask]
+flux_unc = flux_unc[mask]
 cont_wavelength, cont_flux = np.concatenate([*continuous]).transpose()
 inds = np.argsort(cont_wavelength)
 cont_wavelength = cont_wavelength[inds]
@@ -166,13 +210,16 @@ cont_flux = cont_flux[mask]
 cont_flux_res = np.interp(wavelength, cont_wavelength, cont_flux)
 
 # Optical depth.
-absorbance = -np.log10(flux / cont_flux_res)
+with np.errstate(invalid='ignore'):
+    absorbance = -np.log10(flux / cont_flux_res)
 if use_accurate_uncs:
-    print('Calculating...')
+    print('Propagating observational uncertainties...')
     flux_rv = rv.RichArray(flux, flux_unc, domains=[0,np.inf])
-    absorbance_rv = rv.function_with_rich_arrays('-np.log10({}/{})',
-            [flux_rv, rv.RichArray(cont_flux_res)], elementwise=True,
-                consider_intervs=False, len_samples=800)
+    with np.errstate(invalid='ignore'):
+        absorbance_rv = rv.function_with_rich_arrays('-np.log10({}/{})',
+                [flux_rv, rv.RichArray(cont_flux_res)], elementwise=True,
+                    consider_intervs=False, len_samples=800)
+    print()
 else:
     absorbance_unc = flux_unc / flux / np.log(10)
     absorbance_rv = rv.RichArray(absorbance, absorbance_unc)
@@ -185,16 +232,17 @@ plt.close('all')
 plt.figure(1, figsize=figsize)
 
 plt.subplot(2,1,1)
-plt.axvspan(wavenumber[-1], wavenumber[-1], color='gray', alpha=0.1,
-            label='regions of the fit')
-plt.errorbar(wavenumber, flux, flux_unc, fmt='.-', color='black', ecolor='gray',
+if len(all_regions) > 0:
+    plt.axvspan(1e4/all_regions[0][0], 1e4/all_regions[0][0], color='gray', alpha=0.1,
+                label='regions of the fit')
+plt.errorbar(wavenumber_, flux_, flux_unc_, fmt='.-', color='black', ecolor='gray',
              alpha=0.6, ms=1., lw=1.)
 plt.plot(cont_wavenumber, cont_flux, color=color, alpha=0.8,
          zorder=2.5, label='fitted continuum')
 for (x1,x2) in all_regions:
     for (fc, ec) in zip(['none', 'gray'], ['gray', 'none']):
         plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)
-plt.margins(x=0.02)
+plt.margins(x=0.)
 plt.xlim(plt.xlim()[::-1])
 plt.xlabel('wavenumber (cm$^{-1}$)')
 plt.yscale('log')
@@ -231,26 +279,28 @@ plt.tight_layout()  # h_pad = 0
 
 #%% Saving of plot and files.
 
-path = '{}/continuumfit.png'.format(folder)
+path = os.path.join(folder, 'continuumfit.png')
 plt.savefig(path)
-print('Saved plot in {}.'.format(path))
+print(f'Saved plot in {path}.')
 
-path = '{}/{}-cont.txt'.format(folder, name)
+path = os.path.join(folder, f'{name}-cont.txt')
 np.savetxt(path, np.array([cont_wavenumber, cont_flux]).T,
            header='wavenumber_(/cm) continuum_(mJy)', fmt=['%.7f','%.9f'])
-print('Saved fitted continuum in {}.'.format(path))
+print(f'Saved fitted continuum in {path}.')
 
-absorbance_txt = absorbance_rv.mains
-absorbance_unc_txt = absorbance_rv.uncs.mean(axis=1)
-path = '{}/{}-c.txt'.format(folder, name)
-np.savetxt(path, np.array([wavenumber, absorbance_txt, absorbance_unc_txt]).T,
-           header='wavenumber_(μm) absorbance absorbance_unc',
-           fmt=['%.7f','%.7f', '%.7f'])
-print('Saved absorbance spectrum in {}.'.format(path))
+if output_file.endswith('.txt') or output_file.endswith('.dat'):
+    absorbance_txt = absorbance_rv.mains
+    absorbance_unc_txt = absorbance_rv.uncs.mean(axis=1)
+    path = os.path.join(folder, output_file)
+    np.savetxt(path, np.array([wavenumber, absorbance_txt, absorbance_unc_txt]).T,
+               header='wavenumber_(/cm) absorbance absorbance_unc',
+               fmt=['%.7f','%.7f', '%.7f'])
+    print(f'Saved absorbance spectrum in {path}.')
 
-df = rv.RichDataFrame({'wavelength (μm)': wavelength,
-                       'absorbance': absorbance_rv})
-df.set_params({'num_sf': 3})
-path = '{}/{}-c.csv'.format(folder, name)
-df.to_csv(path, index=False)
-print('Saved absorbance spectrum in {}.'.format(path))
+if output_file.endswith('.csv'):
+    df = rv.RichDataFrame({'wavelength (μm)': wavelength,
+                           'absorbance': absorbance_rv})
+    df.set_params({'num_sf': 3})
+    path = os.path.join(folder, output_file)
+    df.to_csv(path, index=False)
+    print(f'Saved absorbance spectrum in {path}.')
