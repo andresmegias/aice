@@ -11,8 +11,7 @@ Andrés Megías.
 
 # Files for AICE.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
-weights_path = '/Users/andresmegias/Documents/Astro/Proyectos/AICE/neural-network/training/aice-weights.npy'
-errors_path = '/Users/andresmegias/Documents/Astro/Proyectos/AICE/neural-network/training/aice-errors.csv'
+weights_path = '/Users/andresmegias/Documents/Astro/Proyectos/AICE/neural-network/training/models/aice-weights.npy'
 
 # Libraries.
 import os
@@ -249,7 +248,7 @@ def parse_composition(text, folder):
         species_list = [text]
     return species_list
 
-def aice_model(absorbance, weights, errors):
+def aice_model(absorbance, weights):
     """
     Neural network model of AICE.
     
@@ -262,8 +261,6 @@ def aice_model(absorbance, weights, errors):
         Absorbance points of the spectrum.
     weights : array (float)
         Weights of the neural network ensemble.
-    errors : array (float)
-        Intrinsec errors of the neural network model.
     
     Returns
     -------
@@ -298,16 +295,13 @@ def aice_model(absorbance, weights, errors):
     for j in range(weights.shape[0]):
         yj = np.zeros(weights.shape[1])
         for i in range(len(yj)):
-            fit_temp = True if i == 0 else False
-            end_act = relu if fit_temp else sigmoid
+            end_act = relu if i == 0 else sigmoid
             yj[i] = nn_model(absorbance, weights[j,i], end_act)[0]
         results += [yj]
     results = np.array(results)
     stdevs = np.std(results, axis=0)
     predictions = np.mean(results, axis=0)
-    # uncs = np.maximum(errors, stdevs)
-    uncs = stdevs
-    predictions = rv.RichArray(predictions, uncs)
+    predictions = rv.RichArray(predictions, stdevs)
     labels = aice_labels + ['all molecules']
     sum_predictions = predictions[1:].sum()
     predictions = list(predictions) + [sum_predictions]
@@ -700,8 +694,8 @@ def save_files(spectra, data_log, action_log, files, baseline=False):
             absorbance_i = spectrum[intensity_variable]
             absorbance_i = np.interp(wavenumber, wavenumber_i, absorbance_i)
             new_df[column] = absorbance_i
-            nd = max([len(x.split('.')[-1]) if '.' in x else 0
-                      for x in wavenumber.astype(str)])
+        nd = max([len(x.split('.')[-1]) if '.' in x else 0
+                  for x in wavenumber.astype(str)])
         new_df['wavenumber (/cm)'] = new_df['wavenumber (/cm)'].map(
                                                 lambda x: '{:.{}f}'.format(x, nd))
         new_df.to_csv(filename, index=False, float_format='%.3e')
@@ -1106,7 +1100,7 @@ def press_key(event):
                                 spectrum['wavenumber'], spectrum['absorbance'])
             absorbance = np.nan_to_num(absorbance, nan=0.)
             absorbance /= np.nanmean(absorbance)
-            predictions_df = aice_model(absorbance, weights, errors)
+            predictions_df = aice_model(absorbance, weights)
             print(predictions_df)
     elif event.key in ('B', 'ctrl+b'):
         data_log = data_log[:ilog+1]
@@ -1288,23 +1282,16 @@ for keymap in keymaps:
     plt.rcParams.update({'keymap.' + keymap: []})
 sep = '\\' if platform.system() == 'Windows' else '/'  # folder separator
 
-# Weights and errors for AICE.
+# Weights of AICE.
+weights = np.load(weights_path, allow_pickle=True)
 try:
     weights = np.load(weights_path, allow_pickle=True)
-    errors_df = pd.read_csv(errors_path, index_col=0)
-    errors = []
-    for name in errors_df:
-        for label in aice_labels:
-            label = label.split(' ')[0].replace('.', '')
-            if label == name:
-                errors += [errors_df[name].values.mean()]
 except:
     weights = None
-    errors = None
 
 # Reading of the arguments.
 if len(sys.argv) == 1:
-    path = input('Write the name of the input file: ')
+    path = input('Drag the input file: ')
     print()
     # folder = sep.join(sys.argv[0].split(sep)[:-1])
     folder = sep.join(path.split(sep)[:-1]).replace('\\','')
@@ -1319,8 +1306,7 @@ else:
     for (i,arg) in enumerate(sys.argv[1:]):
         if arg == '--flux':
             using_flux = True
-        else:
-            file_paths += [arg]
+        file_paths += [arg]
 
 #%% Reading of the data files.
 
@@ -1453,10 +1439,10 @@ print('Press Z to zoom, Right/Left to move through the spectrum,'
       'Press F to multiply the selected regions by the specified factor. '
       'Press W to automatically add windows depending on the molecules present'
       ' in the file name, or Shift+W to add a molecule manually. '
-      'Press P to use AICE to predict the composition of the ice.'
+      'Press P to use AICE to predict the composition of the ice. '
       'Press Ctrl+B to save the current baseline(s). '
       'Press I to integrate the selected spectrum in the current window, or'
-      ' Shift+I to introduce a band strength and integrate the column density.'
+      ' Shift+I to introduce a band strength and integrate the column density. '
       'Press 0 to set the selected windows to zero, or Shift+0 (or =) to only'
       ' do so for negative absorbance values; if using manual selection of'
       ' points, this will automatically select a set of uniform zero points. '
