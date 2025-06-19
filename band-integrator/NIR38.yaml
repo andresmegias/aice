@@ -1,0 +1,33 @@
+input file: '../data/astro/NIR38/NIR38-c-s.txt'
+show fractional abundance: yes
+propagate observational uncertainties: yes
+
+bands:
+    H2O:
+        center (/cm): 3260.
+        width (/cm): 400.
+        band strength (cm): 2.2e-16
+    CO:
+        center (/cm): 2139.
+        width (/cm): 10.
+        excluded width (/cm): 4.
+        band strength (cm): 1.4e-17
+        offset: 0.083
+    CO2:
+        center (/cm): 2343.
+        width (/cm): 20.
+        band strength (cm): 1.1e-16
+        excluded width (/cm): 10.
+    CH3OH:
+        center (/cm): 1027.
+        width (/cm): 40.
+        band strength (cm): 1.78e-17
+    NH3:
+        center (/cm): 1100.
+        width (/cm): 30.
+        band strength (cm): 2.1e-17
+    CH4:
+        center (/cm): 1297.
+        width (/cm): 15.
+        band strength (cm): 8.4e-18
+        offset: 0.036
