@@ -10,7 +10,7 @@ Andrés Megías
 """
 
 # Configuration file.
-config_file = 'NIR38.yaml'
+config_file = 'CO.yaml'
 
 # Libraries.
 import os
@@ -18,6 +18,7 @@ import re
 import sys
 import copy
 import yaml
+import platform
 import numpy as np
 import pandas as pd
 import richvalues as rv
@@ -34,9 +35,9 @@ def axis_conversion(x):
         y = 1e4 / x
     return y
 
-def gaussian(x, x0, s, h):
-    """Gaussian with given center (x0), width (s) and height (h)."""
-    y = h * np.exp(-0.5*((x-x0)/s)**2)
+def gaussian(x, x0, s, h, y0):
+    """Gaussian with given center (x0), width (s), height (h) and offset (y0)."""
+    y = h * np.exp(-0.5*((x-x0)/s)**2) + y0
     return y
 
 def format_species_name(input_name, simplify_numbers=True, acronyms={}):
@@ -163,6 +164,8 @@ def correct_water_band(x, y, yf):
     yf = rv.rolling_function(np.mean, yf, 45)
     return yf
 
+sep = '\\' if platform.system() == 'Windows' else '/'  # folder separator
+
 #%% Initial options.
 
 plt.close('all')
@@ -174,8 +177,7 @@ print()
 
 # Default options.
 default_options = {
-    'input file': '',
-    'output folder': 'abs-coeffs/',
+    'output file': None,
     'figure size': [9., 5.],
     'data column': None,
     'show fractional abundance': False,
@@ -185,14 +187,14 @@ default_options = {
     'integration sigmas': 3.,
     'normalization band': 'all',
     'normalization column': 'first',
-    'wavenumber range (/cm)': (4001., 980., 1.)
+    'wavenumber range (/cm)': (4001., 500., 1.)
     }
 
 # Configuration file.
-config_path = './' + config_file if len(sys.argv) == 1 else sys.argv[1]
-name = config_path.replace('.yaml', '').replace('./', '/').replace('.', '')
+config_path = config_file if len(sys.argv) == 1 else sys.argv[1]
+name = config_path.replace('.yaml', '').replace('.'+sep, sep).replace('.', '')
 config_path = os.path.realpath(config_path)
-config_folder = '/'.join(config_path.split('/')[:-1]) + '/'
+config_folder = sep.join(config_path.split(sep)[:-1])
 os.chdir(config_folder)
 if os.path.isfile(config_path):
     with open(config_path) as file:
@@ -204,8 +206,8 @@ with open(config_file) as file:
 config = {**default_options, **config}
 
 # Loading of options.
-file = config['input file']
-output_folder = config['output folder']
+input_file = config['input file']
+output_file = config['output file']
 figsize = config['figure size']
 data_column = config['data column']
 show_fractions = config['show fractional abundance']
@@ -223,14 +225,14 @@ x1x2 = (x1, x2)
 x1, x2 = min(x1x2), max(x1x2)
 x = wavenumber = np.arange(x1, x2, int(dx))
 # Some more options.
-input_format = '.' + file.split('.')[-1]
+input_format = '.' + input_file.split('.')[-1]
 output_format = input_format
 
 #%% Reading and analyzing spectra.
 
 # Reading of spectra.
 if input_format == '.txt':
-    data = np.loadtxt(file)
+    data = np.loadtxt(input_file)
     x_ = data[:,0]
     inds = np.argsort(x_)
     data = data[inds,:]
@@ -242,7 +244,7 @@ if input_format == '.txt':
     spectra = pd.DataFrame({'x': x, 'y': y})
     columns = list(spectra.columns)
 elif input_format == '.csv':
-    spectra = pd.read_csv(file)
+    spectra = pd.read_csv(input_file)
     data = spectra.values
     x = data[:,0]
     inds = np.argsort(x)
@@ -272,6 +274,9 @@ for (k,column) in enumerate(columns[1:]):
         width = options['width (/cm)']
         band_strength = options['band strength (cm)']
         fix_band = True if 'fixed' in options and options['fixed'] else False
+        integrate_fit_ = (options['integrate fit'] if 'integrate fit' in options
+                         else integrate_fit)
+        offset = options['offset'] if 'offset' in options else 0.
         xrange = [center - width/2, center + width/2]
         ampl = sigmas * width/2
         if fix_band:
@@ -281,10 +286,10 @@ for (k,column) in enumerate(columns[1:]):
         x_ = x[mask]
         y_ = y[mask]
         dy_ = dy[mask]
-        if integrate_fit:
+        if integrate_fit_:
             guess = [np.nanmax(y_)] if fix_band else [center, width/4, np.nanmax(y_)]
-            gaussian_function = ((lambda x,h: gaussian(x, center, std, h))
-                                 if fix_band else gaussian)
+            gaussian_ = ((lambda x,h: gaussian(x, center, std, h, offset)) if fix_band
+                         else lambda x,x0,s,h: gaussian(x, x0, s, h, offset))
             mask = (x_ >= xrange[0]) & (x_ <= xrange[1])
             if 'excluded width (/cm)' in options:
                 width = options['excluded width (/cm)']
@@ -294,52 +299,54 @@ for (k,column) in enumerate(columns[1:]):
             mask &= (y_ >= 0.3*np.max(y_[mask]))
             try:
                 if not propagate_obs_uncs:
-                    params = curve_fit(gaussian_function, x_[mask], y_[mask], p0=guess)[0]
+                    params = curve_fit(gaussian_, x_[mask], y_[mask], p0=guess)[0]
                 else:
                     fit_results = rv.curve_fit(x_[mask], rv.RichArray(y_[mask], dy_[mask]),
-                                    gaussian_function, guess, num_samples=400,
+                                    gaussian_, guess, num_samples=600,
                                     consider_param_intervs=False)
                     params = fit_results['parameters']
                     params_samples = fit_results['parameters samples']
             except:
                 params = guess
+            if propagate_obs_uncs:
+                areas = []
+                if integrate_fit_:
+                    if fix_band:
+                        for h in params_samples:
+                            y_f = gaussian_(x_, h)
+                            if band.startswith('H2O'):
+                                y_f = correct_water_band(x_, y_, y_f)
+                            areas += [np.trapz(y_f-offset, x_)]
+                    else:
+                        for (x0,s,h) in params_samples:
+                            y_f = gaussian_(x_, x0, s, h)
+                            if band.startswith('H2O'):
+                                y_f = correct_water_band(x_, y_, y_f)
+                            areas += [np.trapz(y_f-offset, x_)]
+                else:
+                    areas = rv.array_distribution(lambda x,y: np.trapz(y,x), [x_, y_],
+                                               num_samples=1200, consider_intervs=False)
+                area = rv.evaluate_distr(areas, domain=[0.,np.inf], consider_intervs=False)
+            else:
+                y_f = gaussian_(x_, *params)
+                area = np.trapz(y_f-offset, x_)
             params = rv.rich_array(params)
-            y_f = gaussian_function(x_, *params.centers)
+            y_f = gaussian_(x_, *params.centers)
             if band.startswith('H2O'):
                 y_f = correct_water_band(x_, y_, y_f)
-        if not propagate_obs_uncs:
-            area = (rv.rval(np.trapz(y_f, x_)) if integrate_fit
-                    else rv.rval(np.trapz(y_, x_)))
         else:
-            areas = []
-            if integrate_fit:
-                if fix_band:
-                    for h in params_samples:
-                        y_f = gaussian_function(x_, h)
-                        if band.startswith('H2O'):
-                            y_f = correct_water_band(x_, y_, y_f)
-                        areas += [np.trapz(y_f, x_)]
-                else:
-                    for (x0,s,h) in params_samples:
-                        y_f = gaussian_function(x_, x0, s, h)
-                        if band.startswith('H2O'):
-                            y_f = correct_water_band(x_, y_, y_f)
-                        areas += [np.trapz(y_f, x_)]
-            else:
-                areas = rv.array_distribution(lambda x,y: np.trapz(y,x), [x_, y_],
-                                           num_samples=640, consider_intervs=False)
-            area = rv.evaluate_distr(areas, domain=[0.,np.inf], consider_intervs=False)
+            area = np.trapz(y_-offset, x_)
         with np.errstate(invalid='ignore'):
             coldens = np.log(10) * area / band_strength
         result['bands'][band] = {}
-        if integrate_fit:
+        if integrate_fit_:
             result['bands'][band]['fit parameters'] = params
-            result['bands'][band]['fit'] = {'x': x_, 'y': y_f}
+            result['bands'][band]['fit'] = {'x': x_, 'y': y_f, 'y0': offset}
         else:
-            result['bands'][band]['band'] = {'x': x_, 'y': y_}
+            result['bands'][band]['band'] = {'x': x_, 'y': y_, 'y0': offset}
         result['bands'][band]['column density (/cm2)'] = coldens
         results[column] = result
-        y_max = max(y.max(), y_f.max()) if integrate_fit else y.max()
+        y_max = max(y.max(), y_f.max()) if integrate_fit_ else y.max()
         ylims += [y.min(), y_max]
     
 #%% Displaying results.
@@ -352,7 +359,7 @@ else:
 # Column densities and fractional abundances.
 for column in shown_results:
     result = results[column]
-    title = file.split('/')[-1]
+    title = input_file.split('/')[-1]
     if input_format == '.csv':
         title += f' - {column}'.replace('abs. ', '').replace('.0 ', ' ')
     print(title)
@@ -396,7 +403,7 @@ margin = 0.02*np.diff(ylims)
 ylims = np.array([min(ylims)-margin, max(ylims)+6*margin])
 # Plots.
 for (k,column) in enumerate(columns[1:]):
-    title = file.split('/')[-1]
+    title = input_file.split('/')[-1]
     if input_format == '.csv':
         title += f' - {column}'.replace('abs. ', '').replace('.0 ', ' ')
     y = spectra[column].values
@@ -410,15 +417,17 @@ for (k,column) in enumerate(columns[1:]):
     plt.fill_between([], [], color='palevioletred', alpha=0.2, label='integrated area')
     std = np.nanstd(y)
     for band in result['bands']:
-        if integrate_fit:
+        if 'fit' in  result['bands'][band]:
             fit_data = result['bands'][band]['fit']
             plt.plot(fit_data['x'], fit_data['y'], color='palevioletred', zorder=3.)
             x_ = fit_data['x']
             y_ = fit_data['y']
+            y0 = fit_data['y0']
         else:
             x_ = result['bands'][band]['band']['x']
             y_ = result['bands'][band]['band']['y']
-        plt.fill_between(x_, y_, color='palevioletred', alpha=0.2)
+            y0 = result['bands'][band]['band']['y0']
+        plt.fill_between(x_, y0, y_, color='palevioletred', alpha=0.4)
         y_text = np.max(y_) + 0.5*std
         text = format_species_name(band)
         plt.text(bands[band]['center (/cm)']+34., y_text, text,
@@ -431,14 +440,16 @@ for (k,column) in enumerate(columns[1:]):
     plt.title(title, fontweight='bold', pad=12)
     ax = plt.gca()
     ax2 = ax.secondary_xaxis('top', functions=(axis_conversion, axis_conversion))
-    wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # μm
-    wavelength_ticklabels = [1, 2, 3, 4, 5, '', 7, '', '', '', '', '', '', '', 15]
+    wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                        11, 12, 13, 14, 15, 16, 17, 18, 19, 20]  # μm
+    wavelength_ticklabels = [1, 2, 3, 4, 5, '', 7, '', '', '',
+                             '', 12, '', '', '', '', '', '', '', '']
     ax2.set_xticks(wavelength_ticks, wavelength_ticklabels)
     ax2.set_xlabel('wavelength (μm)', labelpad=6., fontsize=9.)
     plt.legend()
     if normalize_spectra:
         ax3 = plt.twinx(ax)
-        norm = result['norm'].main
+        norm = result['norm']
         ax3.plot(x, y/norm, alpha=0.)
         ax3.set_ylim(ylims/norm)
         ax3.yaxis.set_major_formatter(ScalarFormatter(useMathText=True)) 
@@ -446,30 +457,24 @@ for (k,column) in enumerate(columns[1:]):
     plt.tight_layout()
 
 # Normalization and saving of normalized spectra.
-if normalize_spectra:
+if normalize_spectra and output_file is not None:
     if output_format == '.txt':
         data = [x, y/norm]
         data = np.array(data).T
         header = 'wavenum.(/cm) abs.coeff.(cm2)'
-        filename = (file.split('/')[-1].replace('.txt', '-n.txt')
-                    .replace('-n-n', '-n'))
-        if '-r-' in filename:
-            filename = filename.replace('-r-', '-').replace('-n.txt', '-r-n.txt')
-        np.savetxt(output_folder+filename, data, fmt='%.1f %.3e',
+        np.savetxt(output_file, data, fmt='%.1f %.3e',
                    header=header, delimiter='\t')
-        print(f'Saved file in {output_folder}{filename}')
+        print(f'Saved file in {output_file}')
     elif output_format == '.csv':
-        filename = (file.split('/')[-1].replace('.csv', '-n.csv')
-                    .replace('-n-n', '-n'))
         if data_column is not None:
             spectra = spectra[['wavenumber (/cm)'] + [data_column]]
         for column in columns[1:]:
-            spectra[column] = spectra[column] / results[column]['norm'].main
+            spectra[column] = spectra[column] / results[column]['norm']
         new_columns = list(spectra.columns)
         for (i,column) in enumerate(new_columns[1:]):
             new_columns[i+1] = column.replace('abs.', 'abs. coeff. (cm2)')
         spectra.columns = new_columns
         spectra['wavenumber (/cm)'] = spectra['wavenumber (/cm)'].map(
                                                 lambda x: '{:.1f}'.format(x))
-        spectra.to_csv(output_folder+filename, index=False, float_format='%.3e')
-        print(f'Saved file in {output_folder}{filename}.')
+        spectra.to_csv(output_file, index=False, float_format='%.3e')
+        print(f'Saved file in {output_file}.')
