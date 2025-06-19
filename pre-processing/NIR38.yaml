@@ -1,0 +1,67 @@
+parent folder: '../data/astro/NIR38'
+figure size: [6., 7.]  # [6., 7.]
+      
+merging:
+    input files:
+        NIRCam:
+            file: 'NIR38_JWST_NIRCam_WFSS_spectrum_McClure23.txt'
+            wavenumber range (/cm): [4100, 2553]
+            wavenumber gaps (/cm): [[3508.5, 2621.5]]
+        NIRSpec:
+            file: 'NIR38_JWST_NIRSpec_FS_spectrum_McClure23.txt'
+            wavenumber range (/cm): [3650, 1890]
+            wavenumber gaps (/cm): [[3650., 3508.5], [2621.5, 2553.5]]
+        MIRI:
+            file: 'NIR38_JWST_MIRI_LRS_FS_spectrum_McClure23.txt'
+            wavenumber range (/cm): [1890, 700]
+    comment character in input files: ';'
+    new wavenumber range (/cm): [4100, 700]
+    resample data: no
+    colors:
+        NIRCam: 'brown'
+        NIRSpec: 'lightcoral'
+        MIRI: 'tab:brown'
+    output file: 'NIR38.txt'
+
+continuum fit:
+    input file: 'NIR38.txt'
+    fits:
+    - continuum file:
+        file: 'AV60_localcont_wholerange_v4.dat'
+        column indices: {'x': 1, 'y': 3}
+        scale factor: 1e3
+        description:
+        - polynomial:
+              range (μm): [2.44, 5.0]
+              fit regions (μm):
+              - [2.44, 2.49]
+              - [2.65, 2.69]
+              - [2.715, 2.720]
+              - [4.00, 4.04]
+              - [4.06, 4.07]
+              - [5.15, 5.20]
+              - [5.3, 5.7]
+              order: 5
+        - polynomial:
+              range (μm): [5.0, 14.0]
+              fit regions (μm):
+              - [5.19, 5.21]
+              - [5.57, 5.65]
+              - [13.17, 13.19]
+              order: 2
+    calculate accurate uncertainties: yes
+    output file: 'NIR38-c.txt'
+
+silicate removal:
+    OpTool path: '~/Documents/optool/optool'
+    input file: 'NIR38-c.txt'
+    silicate file: 'NIR38-silicate.csv'
+    range (μm): [7.8, 15.0]
+    fit regions (μm):
+        - [8.3, 8.7]
+        - [10.0, 10.4]
+    composition:
+        - pyr-mg70 (pyroxene)  # 0.60
+        - ol-mg50 (olivine)  # 0.30
+    grain size (μm): 1.0
+    output file: 'NIR38-c-s.txt'

@@ -1,0 +1,60 @@
+parent folder: '../data/astro/J110621'
+figure size: [8., 7.]  # [6., 7.]
+      
+merging:
+    input files:
+        NIRSpec:
+            file: 'J110621_JWST_NIRSpec_FS_spectrum_McClure23.txt'
+            wavenumber range (/cm): [3650, 1890]
+            wavenumber gaps (/cm): [[2621.5, 2553.5]]
+        MIRI:
+            file: 'J110621_JWST_MIRI_LRS_FS_spectrum_McClure23.txt'
+            wavenumber range (/cm): [1890, 700]
+    comment character in input files: ';'
+    resample data: no
+    new wavenumber range (/cm): [3700, 700]
+    new resolution (/cm): 1
+    colors:
+        NIRSpec: 'lightcoral'
+        MIRI: 'tab:brown'
+    output file: 'J110621.txt'
+
+continuum fit:
+    input file: 'J110621.txt'
+    logarithmic fit: no
+    fits:
+    - continuum file:
+          file: 'AV95_localcont_wholerange_v4.dat'
+          column indices: {'x': 1, 'y': 3}
+          scale factor: 142.86
+          description:
+          - polynomial:
+                range (μm): [2.4, 5.2]
+                fit regions (μm):
+                - [2.74, 2.78]
+                - [3.98, 4.01]
+                - [5.4, 5.7]
+                order: 5
+          - polynomial:
+                range (μm): [5.2, 14.0]
+                fit regions (μm):
+                - [5.19, 5.21]
+                - [5.57, 5.65]
+                - [13.15, 13.25]
+                order: 2
+    calculate accurate uncertainties: yes
+    output file: 'J110621-c.txt'
+
+silicate removal:
+    OpTool path: '~/Documents/optool/optool'
+    input file: 'J110621-c.txt'
+    silicate file: 'J110621-silicate.csv'
+    range (μm): [7.8, 15.0]
+    fit regions (μm):
+        - [8.3, 8.7]
+        - [10.0, 10.4]
+    composition:
+        - pyr-mg70 (pyroxene)  # 0.70
+        - ol-mg50 (olivine)  # 0.30
+    grain size (μm): 1.0
+    output file: 'J110621-c-s.txt'
