@@ -26,14 +26,7 @@ reference values:
         NH3: 3
         CH4: 1
         other: 1
-    AICE-BI (this work):
-        H2O: 9.0+/-0.3
-        CO: 2.86+/-0.10
-        CO2: 1.6-0.2+0.5
-        CH3OH: 1.2-0.3+0.8
-        NH3: 0.31-0.05+0.08
-        CH4: 0.211+/-0.011
 used reference values: ['McClure', 'Dartois']
 AICE label: 'AICE (this work)'
-save results: no
+save results: yes
 output file: J110621-aice.csv
