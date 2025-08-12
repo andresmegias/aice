@@ -1,11 +1,12 @@
-input spectrum: '../../data/astro/NIR38/NIR38-c-s.txt'
+input spectrum: '../../spectra/astro/NIR38/NIR38-c-s.txt'
 model weights: '../training/models/aice-weights.npy'
 wavenumber range (/cm): [4001., 980., 1.]
 resampling edges (/cm): [1890.]
 spectrum vertical range: [-0.4, 11.2]
 molecular fraction range: [0., 0.7]
 normalization: 'total'
-propagate observational uncertainties: no
+show predictions for all submodels: no
+propagate observational uncertainties: yes
 reference values:
     McClure et al. (2023):
         temp. (K): 11-1+2
@@ -26,12 +27,13 @@ reference values:
         CH4: 1
         other: 1
     AICE-BI (this work):
-        H2O: 62.43-0.25+0.24
-        CO: 14.93-0.13+0.14
-        CO2: 10.92-0.13+0.14
-        CH3OH: 7.36-0.15+0.15
-        NH3: 2.86-0.16+0.17
-        CH4: 1.48-0.11+0.06
+        H2O: 7.0878+/-0.0011
+        CO: 2.007+/-0.008
+        CO2: 1.238+/-0.020
+        CH3OH: 0.81-0.05+0.07
+        NH3: 0.34-0.03+0.04
+        CH4: 0.171-0.007+0.008
 used reference values: ['McClure', 'Dartois']
 AICE label: 'AICE (this work)'
 save results: no
+output file: 'NIR38-aice.csv'

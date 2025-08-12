@@ -9,7 +9,7 @@ Inference module
 Andrés Megías
 """
 
-config_file = 'J110621.yaml'
+config_file = 'NIR38.yaml'
 
 # Libraries.
 import os
@@ -29,7 +29,8 @@ sigmoid = lambda x: 1 / (1 + np.exp(-x))
 def supersample_spectrum(new_wavs, spec_wavs, spec_fluxes, spec_errs=None,
                          fill=np.nan):
     """Supersample spectrum to the input points."""
-    new_fluxes = np.interp(new_wavs, spec_wavs, spec_fluxes, left=fill, right=fill)
+    new_fluxes = np.interp(new_wavs, spec_wavs, spec_fluxes,
+                           left=fill, right=fill)
     if spec_errs is None:
         new_errs = None
     else:
@@ -82,6 +83,7 @@ default_options = {
     'column indices': {'x': 1, 'y': 2, 'y unc.': 3},
     'figure size': [12., 5.],
     'save results': True,
+    'output file': 'auto',
     'model weights': os.path.join('..', 'training', 'models', 'aice-weights.npy'),
     'spectral variable': 'wavenumber (/cm)',
     'intensity variable': 'absorbance',
@@ -94,7 +96,7 @@ default_options = {
     'spectrum vertical range': None,
     'molecular fraction range': [0., 1.0],
     'temperature range (K)': [0., 100.],
-    'plot molecular contributions': False,
+    'show predictions for all submodels': False,
     'propagate observational uncertainties': False,
     'normalization': 'total',
     'reference values': {},
@@ -125,14 +127,15 @@ formatted_names = config['formatted names']
 frac_range = config['molecular fraction range']
 absorb_range = config['spectrum vertical range']
 temp_range = config['temperature range (K)']
-plot_molecular_contributions = config['plot molecular contributions']
 normalization = config['normalization']
 all_references = config['reference values']
 used_references = config['used reference values']
 aice_label = config['AICE label']
+show_individual_predictions = config['show predictions for all submodels']
 propagate_obs_uncs = config['propagate observational uncertainties']
 ref_colors = config['reference colors']
 save_results = config['save results']
+output_file = config['output file']
 show_references = used_references != []
 x1, x2, dx = wavenumber_range
 x1x2 = x1, x2
@@ -197,7 +200,8 @@ norm = np.mean(absorbance)
 absorbance /= norm
 absorbance_unc /= norm
 
-print('Read spectrum in file {}.\n'.format(file))
+print(f'Read spectrum in file {file}.')
+print()
 
 # %% Preparation of the neural network model.
 
@@ -232,37 +236,36 @@ def model_i(x, weights, end_act=sigmoid):
 # Neural network model.
 def nn_model(x, weights):
     """Neural network model the targeted variables."""
-    y = []
+    ya = []
     for j in range(len(weights)):
         yj = np.zeros(num_vars)
         for (i,var) in target_vars.items():
             end_act = relu if 'temp' in var else sigmoid
             yj[i] = model_i(x, weights[j,i], end_act)[0]
-        y += [yj]
-    y = np.array(y)
-    dy = np.std(y, ddof=1, axis=0)
-    y = np.mean(y, axis=0)
-    return y, dy
+        ya += [yj]
+    ya = np.array(ya)
+    dy = np.std(ya, ddof=1, axis=0)
+    y = np.mean(ya, axis=0)
+    return y, dy, ya
 
 #%% Calculations of AICE.
 
 # Predictions.
-predictions, stdevs = nn_model(absorbance, weights)
+predictions, stdevs, predictions_all = nn_model(absorbance, weights)
 if propagate_obs_uncs:
     print('Propagating observational uncertainties...\n')
     predictions_rv = rv.array_function(lambda x: nn_model(x, weights)[0],
                         rv.RichArray(absorbance, absorbance_unc),
                     domain=[0,np.inf], len_samples=400, consider_intervs=False)
-    uncs = predictions_rv.uncs
+    obs_uncs = predictions_rv.uncs
 if (propagate_obs_uncs and any(rv.isnan(predictions).flatten())
         or not propagate_obs_uncs):
-    uncs = 0.
-predictions = rv.RichArray(predictions, uncs, domains=[0,np.inf])
+    obs_uncs = 0.
 
 # Uncertainty estimation.
 stdevs = np.array([stdevs, stdevs]).T  # deviation of nn-predictions
-uncs = (predictions.uncs**2 + stdevs**2)**0.5
-predictions = rv.RichArray(predictions.mains, uncs, domains=[0,np.inf])
+uncs = (obs_uncs**2 + stdevs**2)**0.5
+predictions = rv.RichArray(predictions, uncs, domains=[0,np.inf])
 
 # Preparation of results dataframe.
 results_df = rv.rich_dataframe({aice_label: predictions}, index=variables).T
@@ -316,7 +319,7 @@ if normalization != 'total':
         if name == normalization or 'temp' in name:
             new_vars += [name]
         else:
-            new_vars += ['{}/{}'.format(name, normalization)]
+            new_vars += [f'{name}/{normalization}']
     results_df.index = new_vars
         
 #%% Displaying predictions and plots.
@@ -329,7 +332,7 @@ print()
 with pd.option_context('display.max_columns', 4):
     print(results_df, '\n')
 if normalization == 'total':
-    print('Sum of predicted molecules: {}'.format(results_df.values[1:,0].sum()))
+    print(f'Sum of predicted molecules: {results_df.values[1:,0].sum()}')
 
 # Graphic options.
 if show_references:  # offsets for predictions
@@ -407,7 +410,13 @@ plt.bar(positions, predictions.mains[1:], width=0.6,  # ice composition
 rv.errorbar(positions + offsets[aice_label], predictions[1:], fmt='.',
             color='black')
 plt.plot([], [], '.', color='black', label='AICE (this work)')
-if show_references:  # reference predictions
+if show_individual_predictions:
+    num_seeds = len(predictions_all)
+    for (i, predictions_i) in enumerate(predictions_all):
+        offset_i = (i / (num_seeds-1) - 0.5) * 0.6
+        plt.plot(positions + offset_i, predictions_i[1:], '.',
+                 color='black', alpha=0.3)
+if show_references:  # reference
     for (i,key) in enumerate(references):
         reference = []
         for name in (results_df[key].index):
@@ -431,14 +440,20 @@ plt.title(title, x=0.55, pad=16.)
 fig.add_subplot(gs[0,1])  # temperature
 plt.bar([1.], predictions[0].main, edgecolor='black', color='tab:gray')
 rv.errorbar([1. + offsets[aice_label]], predictions[0], color='black')
-if show_references:
+if show_individual_predictions:
+    num_seeds = len(predictions_all)
+    for (i, predictions_i) in enumerate(predictions_all):
+        offset_i = (i / (num_seeds-1) - 0.5) * 0.6
+        plt.plot(1. + offset_i, predictions_i[0], '.',
+                 color='black', alpha=0.3)
+if show_references:  # reference
     for (i,key) in enumerate(references):
         reference = results_df[key].values
         if rv.isfinite(reference[0]):
             rv.errorbar([1. + offsets[key]], reference[0], color=ref_colors[i])
 plt.ylim(temp_range)
 plt.locator_params(axis='y', nbins=5)
-plt.xticks([1], ['$T_\mathrm{ice}$'], rotation=0., fontsize=10.)
+plt.xticks([1], ['$T_\\mathrm{ice}$'], rotation=0., fontsize=10.)
 plt.tick_params(axis='x', which='major', pad=8.)
 for tick in plt.gca().xaxis.get_major_ticks():
     tick.tick1line.set_visible(False)
@@ -456,6 +471,7 @@ plt.show()
 #%% Save output.
 
 if save_results:
-    filename = config_file.replace('.yaml', '-results.csv')
-    results_df.to_csv(filename)
-    print(f'\nSaved results in {filename}.')
+    if output_file == 'auto':
+        output_file = config_file.replace('.yaml', '-aice-results.csv')
+    results_df.to_csv(output_file)
+    print(f'\nSaved results in {output_file}.')
