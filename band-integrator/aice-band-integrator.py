@@ -10,13 +10,11 @@ Andrés Megías
 """
 
 # Configuration file.
-config_file = 'CO.yaml'
+config_file = 'NIR38.yaml'
 
 # Libraries.
 import os
-import re
 import sys
-import copy
 import yaml
 import platform
 import numpy as np
@@ -35,125 +33,13 @@ def axis_conversion(x):
         y = 1e4 / x
     return y
 
-def gaussian(x, x0, s, h, y0):
-    """Gaussian with given center (x0), width (s), height (h) and offset (y0)."""
-    y = h * np.exp(-0.5*((x-x0)/s)**2) + y0
+def gaussian(x, x0, s, h):
+    """Gaussian with given center (x0), width (s) and height (h)."""
+    y = h * np.exp(-0.5*((x-x0)/s)**2)
     return y
 
-def format_species_name(input_name, simplify_numbers=True, acronyms={}):
-    """
-    Format text as a molecule name, with subscripts and upperscripts.
-
-    Parameters
-    ----------
-    input_name : str
-        Input text.
-    simplify_numbers : bool, optional
-        Remove the brackets between single numbers.
-    acronyms : dict
-        Dictionary of acronyms for species name. If the input text is one of
-        the dictionary keys, it will be replaced by the corresponding value,
-        and then the formatting function will be still applied.
-
-    Returns
-    -------
-    output_name : str
-        Formatted molecule name.
-    """
-    original_name = copy.copy(input_name)
-    # acronyms
-    for name in acronyms:
-        if original_name == name:
-            original_name = acronyms[name]
-    # removing the additional information of the transition
-    original_name = original_name.replace('_k',',k').split(',')[0]
-    # prefixes
-    possible_prefixes = ['#', '@', '$']
-    if '-' in original_name and original_name.split('-')[0].isalpha():
-        prefix = original_name.split('-')[0]
-    else:
-        prefix = ''
-        for text in possible_prefixes:
-            if original_name.startswith(text):
-                prefix = text
-                break
-    original_name = original_name.replace(prefix, '')
-    # upperscripts
-    possible_upperscript, in_upperscript = False, False
-    output_name = ''
-    upperscript = ''
-    inds = []
-    for (i, char) in enumerate(original_name):
-        if (char.isupper() and not possible_upperscript
-                and '-' in original_name[i:]):
-            inds += [i]
-            possible_upperscript = True
-        elif char.isupper():
-            inds += [i]
-        if char == '-' and not in_upperscript:
-            inds += [i]
-            in_upperscript = True
-        if in_upperscript and not (char.isdigit() or char == '-'):
-            in_upperscript = False
-        if not possible_upperscript:
-            output_name += char
-        if in_upperscript and i != inds[-1]:
-            if char.isdigit():
-                upperscript += char
-            if char == '-' or i+1 == len(original_name):
-                if len(inds) > 2:
-                    output_name += original_name[inds[0]:inds[-2]]
-                output_name += ('$^{' + upperscript + '}$'
-                                + original_name[inds[-2]:inds[-1]])
-                upperscript = ''
-                in_upperscript, possible_upperscript = False, False
-                inds = []
-    if output_name == '':
-        output_name = original_name
-    output_name = output_name.replace('[', '^{').replace(']', '}')
-    if output_name.endswith('+') or output_name.endswith('-'):
-        symbol = output_name[-1]
-        output_name = output_name.replace(symbol, '$^{'+symbol+'}$')
-    original_name = copy.copy(output_name)
-    # subscripts
-    original_name = original_name.replace('_','')
-    output_name, subscript, prev_char = '', '', ''
-    in_bracket = False
-    for (i, char) in enumerate(original_name):
-        if char == '{':
-            in_bracket = True
-        elif char == '}':
-            in_bracket = False
-        if (char.isdigit() and not in_bracket
-                and prev_char not in ['=', '-', '{', ',']):
-            subscript += char
-        else:
-            if len(subscript) > 0:
-                output_name += '$_{' + subscript + '}$'
-                subscript = ''
-            output_name += char
-        if i+1 == len(original_name) and len(subscript) > 0:
-            output_name += '$_{' + subscript + '}$'
-        prev_char = char
-    output_name = output_name.replace('^$_', '$^').replace('$$', '')
-    # some formatting
-    output_name = output_name.replace('$$', '').replace('__', '')
-    # remove brackets from single numbers
-    if simplify_numbers:
-        single_numbers = re.findall('{(.?)}', output_name)
-        for number in set(single_numbers):
-            output_name = output_name.replace('{'+number+'}', number)
-    # prefix
-    if prefix == '$':
-        prefix = '\$'
-    if prefix in ('\$', '#', '@'):
-        prefix += '$\,$'
-    output_name = prefix + output_name
-    output_name = output_name.replace('$^$', '')
-    return output_name
-
-def correct_water_band(x, y, yf):
-    """Correct left wing of water band in input spectra and fit (x, y, yf)."""
+def correct_water_band_fit(x, y, yf):
+    """Correct left wing of the water band in input spectra and fit (x, y, yf)."""
     mask = x > 3300.
     ys = rv.rolling_function(np.median, y, 15)
     s = len(x)*(1.*np.std(ys-y))**2
@@ -182,12 +68,13 @@ default_options = {
     'data column': None,
     'show fractional abundance': False,
     'propagate observational uncertainties': False,
-    'integrate fit': True,
+    'do gaussian fit': True,
     'normalize spectra': False,
     'integration sigmas': 3.,
     'normalization band': 'all',
     'normalization column': 'first',
-    'wavenumber range (/cm)': (4001., 500., 1.)
+    'wavenumber limits': 'auto',
+    'band labels': {}
     }
 
 # Configuration file.
@@ -212,18 +99,16 @@ figsize = config['figure size']
 data_column = config['data column']
 show_fractions = config['show fractional abundance']
 propagate_obs_uncs = config['propagate observational uncertainties']
-integrate_fit = config['integrate fit']
+do_gaussian_fit = config['do gaussian fit']
 normalize_spectra = config['normalize spectra']
 norm_band = config['normalization band']
 norm_column = config['normalization column']
 sigmas = config['integration sigmas']
 bands = config['bands']
+xlims = config['wavenumber limits']
+band_labels = config['band labels']
 if len(list(bands.keys())) < 2:
     show_fractions = False
-x1, x2, dx = config['wavenumber range (/cm)']
-x1x2 = (x1, x2)
-x1, x2 = min(x1x2), max(x1x2)
-x = wavenumber = np.arange(x1, x2, int(dx))
 # Some more options.
 input_format = '.' + input_file.split('.')[-1]
 output_format = input_format
@@ -233,14 +118,11 @@ output_format = input_format
 # Reading of spectra.
 if input_format == '.txt':
     data = np.loadtxt(input_file)
-    x_ = data[:,0]
-    inds = np.argsort(x_)
+    x = data[:,0]
+    inds = np.argsort(x)
     data = data[inds,:]
-    x_, y_ = data[:,[0,1]].transpose()
-    dy_ = data[:,2] if data.shape[1] > 2 else np.zeros(len(x))
-    y_ = np.nan_to_num(y_, nan=0.)
-    y = np.interp(x, x_, y_, left=0., right=0.)
-    dy = np.interp(x, x_, dy_, left=0., right=0.)
+    x, y = data[:,[0,1]].transpose()
+    dy = data[:,2] if data.shape[1] > 2 else np.zeros(len(x))
     spectra = pd.DataFrame({'x': x, 'y': y})
     columns = list(spectra.columns)
 elif input_format == '.csv':
@@ -261,7 +143,6 @@ elif input_format == '.csv':
         norm_column = columns[-1]
     dy = np.zeros(len(x))
 
-
 # Fitting and integration of bands.
 results = {}
 ylims = []
@@ -274,79 +155,94 @@ for (k,column) in enumerate(columns[1:]):
         width = options['width (/cm)']
         band_strength = options['band strength (cm)']
         fix_band = True if 'fixed' in options and options['fixed'] else False
-        integrate_fit_ = (options['integrate fit'] if 'integrate fit' in options
-                         else integrate_fit)
-        offset = options['offset'] if 'offset' in options else 0.
+        do_gaussian_fit_ = (options['do gaussian fit'] if 'do gaussian fit' in options
+                         else do_gaussian_fit)
+        base = options['base level'] if 'base level' in options else 0.
+        remove_baseline = True if 'baseline points' in options else False
+        if remove_baseline:
+            x1x2 = options['baseline points']
+            x1, x2 = min(x1x2), max(x1x2)
+            y1 = y[np.argmin(np.abs(x-x1))]
+            y2 = y[np.argmin(np.abs(x-x2))]
+            m = (y2 - y1) / (x2 - x1)
+            base += y1 + m*(x-x1)
+        else:
+            base = base * np.ones(len(x))
         xrange = [center - width/2, center + width/2]
         ampl = sigmas * width/2
         if fix_band:
             ampl *= 2
             std = width/2
         mask = (x >= xrange[0] - ampl) & (x <= xrange[1] + ampl)
+        mask &= np.isfinite(y)
         x_ = x[mask]
         y_ = y[mask]
         dy_ = dy[mask]
-        if integrate_fit_:
+        base_ = base[mask]
+        if do_gaussian_fit_:
             guess = [np.nanmax(y_)] if fix_band else [center, width/4, np.nanmax(y_)]
-            gaussian_ = ((lambda x,h: gaussian(x, center, std, h, offset)) if fix_band
-                         else lambda x,x0,s,h: gaussian(x, x0, s, h, offset))
+            gaussian_ = ((lambda x,h: gaussian(x, center, std, h)) if fix_band
+                         else lambda x,x0,s,h: gaussian(x, x0, s, h))
             mask = (x_ >= xrange[0]) & (x_ <= xrange[1])
             if 'excluded width (/cm)' in options:
                 width = options['excluded width (/cm)']
                 semiwidth = width / 2
                 xrange = [center - semiwidth, center + semiwidth]
                 mask &= (x_ <= xrange[0]) | (x_ >= xrange[1])
-            mask &= (y_ >= 0.3*np.max(y_[mask]))
-            try:
-                if not propagate_obs_uncs:
-                    params = curve_fit(gaussian_, x_[mask], y_[mask], p0=guess)[0]
-                else:
-                    fit_results = rv.curve_fit(x_[mask], rv.RichArray(y_[mask], dy_[mask]),
-                                    gaussian_, guess, num_samples=600,
-                                    consider_param_intervs=False)
-                    params = fit_results['parameters']
-                    params_samples = fit_results['parameters samples']
-            except:
-                params = guess
+            mask &= (y_ - base_ >= 0.1*np.max(y_[mask] - base_[mask]))
+            if propagate_obs_uncs:
+                y_ra = rv.RichArray(y_, dy_)
+                fit_results = rv.curve_fit(x_[mask], y_ra[mask]-base_[mask],
+                                           gaussian_, guess, num_samples=600,
+                                           consider_param_intervs=False)
+                params = fit_results['parameters']
+                params_samples = fit_results['parameters samples']
+            else:
+                params = curve_fit(gaussian_, x_[mask], y_[mask], p0=guess)[0]
             if propagate_obs_uncs:
                 areas = []
-                if integrate_fit_:
-                    if fix_band:
-                        for h in params_samples:
-                            y_f = gaussian_(x_, h)
-                            if band.startswith('H2O'):
-                                y_f = correct_water_band(x_, y_, y_f)
-                            areas += [np.trapz(y_f-offset, x_)]
-                    else:
-                        for (x0,s,h) in params_samples:
-                            y_f = gaussian_(x_, x0, s, h)
-                            if band.startswith('H2O'):
-                                y_f = correct_water_band(x_, y_, y_f)
-                            areas += [np.trapz(y_f-offset, x_)]
+                if fix_band:
+                    for h in params_samples:
+                        y_f = gaussian_(x_, h)
+                        if band.startswith('H2O'):
+                            y_f = correct_water_band_fit(x_, y_, y_f)
+                        areas += [np.trapz(y_f, x_)]
                 else:
-                    areas = rv.array_distribution(lambda x,y: np.trapz(y,x), [x_, y_],
-                                               num_samples=1200, consider_intervs=False)
-                area = rv.evaluate_distr(areas, domain=[0.,np.inf], consider_intervs=False)
+                    for (x0,s,h) in params_samples:
+                        y_f = gaussian_(x_, x0, s, h)
+                        if band.startswith('H2O'):
+                            y_f = correct_water_band_fit(x_, y_, y_f)
+                        areas += [np.trapz(y_f, x_)]
+                area = rv.evaluate_distr(areas, domain=[0.,np.inf],
+                                         consider_intervs=False)
             else:
                 y_f = gaussian_(x_, *params)
-                area = np.trapz(y_f-offset, x_)
+                area = np.trapz(y_f, x_)
             params = rv.rich_array(params)
             y_f = gaussian_(x_, *params.centers)
             if band.startswith('H2O'):
-                y_f = correct_water_band(x_, y_, y_f)
+                y_f = correct_water_band_fit(x_, y_, y_f)
         else:
-            area = np.trapz(y_-offset, x_)
+            if propagate_obs_uncs:
+                y_ra = rv.RichArray(y_, dy_)
+                areas = rv.array_distribution(lambda x,y: np.trapz(y-base_,x),
+                                              [x_, y_ra], num_samples=1200,
+                                              consider_intervs=False)
+                area = rv.evaluate_distr(areas, domain=[0.,np.inf],
+                                         consider_intervs=False)
+            else:
+                area = np.trapz(y_-base_, x_)
         with np.errstate(invalid='ignore'):
             coldens = np.log(10) * area / band_strength
         result['bands'][band] = {}
-        if integrate_fit_:
+        if do_gaussian_fit_:
             result['bands'][band]['fit parameters'] = params
-            result['bands'][band]['fit'] = {'x': x_, 'y': y_f, 'y0': offset}
+            result['bands'][band]['fit'] = {'x': x_, 'y': y_f+base_, 'base': base_}
         else:
-            result['bands'][band]['band'] = {'x': x_, 'y': y_, 'y0': offset}
+            result['bands'][band]['band'] = {'x': x_, 'y': y_, 'base': base_}
         result['bands'][band]['column density (/cm2)'] = coldens
         results[column] = result
-        y_max = max(y.max(), y_f.max()) if integrate_fit_ else y.max()
+        y_max = max(y.max(), y_f.max()) if do_gaussian_fit_ else y.max()
         ylims += [y.min(), y_max]
     
 #%% Displaying results.
@@ -398,9 +294,8 @@ for (k,column) in enumerate(columns[1:]):
 #%% Plotting and optional normalization.
 
 # Graphic options.
-ylims = [min(ylims), max(ylims)]
-margin = 0.02*np.diff(ylims)
-ylims = np.array([min(ylims)-margin, max(ylims)+6*margin])
+if xlims == 'auto':
+    xlims = [x.max(), x.min()]
 # Plots.
 for (k,column) in enumerate(columns[1:]):
     title = input_file.split('/')[-1]
@@ -412,49 +307,49 @@ for (k,column) in enumerate(columns[1:]):
     plt.clf()    
     plt.errorbar(x, y, dy, ms=1., color='black', ecolor='gray', label='observations')
     plt.axhline(y=0, color='k', ls='--', lw=0.6)
-    if integrate_fit:
+    if do_gaussian_fit:
         plt.plot([], color='palevioletred', label='AICE fit')
     plt.fill_between([], [], color='palevioletred', alpha=0.2, label='integrated area')
     std = np.nanstd(y)
     for band in result['bands']:
         if 'fit' in  result['bands'][band]:
             fit_data = result['bands'][band]['fit']
-            plt.plot(fit_data['x'], fit_data['y'], color='palevioletred', zorder=3.)
             x_ = fit_data['x']
             y_ = fit_data['y']
-            y0 = fit_data['y0']
+            base_ = fit_data['base']
+            plt.plot(x_, y_, color='palevioletred', zorder=3., alpha=0.7)
         else:
             x_ = result['bands'][band]['band']['x']
             y_ = result['bands'][band]['band']['y']
-            y0 = result['bands'][band]['band']['y0']
-        plt.fill_between(x_, y0, y_, color='palevioletred', alpha=0.4)
+            base_ = result['bands'][band]['band']['base']
+        plt.fill_between(x_, base_, y_, color='palevioletred', alpha=0.4)
         y_text = np.max(y_) + 0.5*std
-        text = format_species_name(band)
+        text = band_labels[band] if band in band_labels else band
         plt.text(bands[band]['center (/cm)']+34., y_text, text,
-                 ha='center', va='center', fontsize=5.)
-    plt.xlim(wavenumber[-1], wavenumber[0])
-    plt.ylim(ylims)
+                 ha='center', va='center', fontsize=6.)
+    plt.xlim(xlims)
     plt.axhline(y=0, color='black', lw=0.5)
-    plt.xlabel('wavenumber (cm$^{-1}$)', labelpad=6)
+    plt.xlabel('wavenumber (cm$^{-1}$)', labelpad=6.)
     plt.ylabel('absorbance')
-    plt.title(title, fontweight='bold', pad=12)
+    plt.title(title, fontweight='bold', pad=12.)
     ax = plt.gca()
     ax2 = ax.secondary_xaxis('top', functions=(axis_conversion, axis_conversion))
     wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
                         11, 12, 13, 14, 15, 16, 17, 18, 19, 20]  # μm
-    wavelength_ticklabels = [1, 2, 3, 4, 5, '', 7, '', '', '',
+    wavelength_ticklabels = [1, 2, 3, 4, 5, '', 7, '', '', 10,
                              '', 12, '', '', '', '', '', '', '', '']
     ax2.set_xticks(wavelength_ticks, wavelength_ticklabels)
     ax2.set_xlabel('wavelength (μm)', labelpad=6., fontsize=9.)
     plt.legend()
+    plt.tight_layout()
     if normalize_spectra:
         ax3 = plt.twinx(ax)
         norm = result['norm']
+        ylims = plt.ylims()
         ax3.plot(x, y/norm, alpha=0.)
         ax3.set_ylim(ylims/norm)
         ax3.yaxis.set_major_formatter(ScalarFormatter(useMathText=True)) 
         ax3.set_ylabel('absorption coefficient (cm$^2$)')
-    plt.tight_layout()
 
 # Normalization and saving of normalized spectra.
 if normalize_spectra and output_file is not None:
