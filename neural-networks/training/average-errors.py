@@ -34,10 +34,8 @@ formatted_names = {'H2O': 'H$_2$O', 'CO': 'CO', 'CO2': 'CO$_2$',
                    'CH3OH': 'CH$_3$OH', 'NH3': 'NH$_3$', 'CH4': 'CH$_4$'}
 variables = ['temp'] + species + ['species']
 colors = ['tab:blue', 'tab:red', 'tab:orange', 'tab:green', 'tab:cyan', 'tab:purple']
-labels = (['$T_\mathrm{ice}$'] + [formatted_names[name] for name in species]
+labels = (['$T_\\mathrm{ice}$'] + [formatted_names[name] for name in species]
           + ['avg.'])
-
-
 
 # Validation errors.
 errors_filename = os.path.join('models', model_name, 'errors',
@@ -48,7 +46,7 @@ for name in (species + ['species']):
     val_errors_df[name] = 100*val_errors_df[name]
 for var in variables:
     val_errors_df.at['avg',var] = val_errors_df[var].mean()
-val_errors_rdf = val_errors_df.copy()
+val_errors_rdf = val_errors_df.copy().astype(object)
 for (i,row) in val_errors_rdf.iterrows():
     for var in variables:
         val_errors_rdf.at[i,var] = f'{row[var]:.1f}'
@@ -95,7 +93,7 @@ plt.xticks(positions, labels[1:], rotation=45.)
 for tick in plt.gca().xaxis.get_major_ticks():
     tick.tick1line.set_visible(False)
 plt.ylabel('molecular fraction (%)')
-plt.suptitle('Mean validation errors', fontweight='bold')
+plt.suptitle(f'Mean validation errors - {model_name}', fontweight='bold')
 ax2 = plt.twinx(plt.gca())
 plt.ylim(0., 6.)
 
@@ -119,7 +117,7 @@ if consider_test_errors:
             test_errors_df[name] = 100*test_errors_df[name]
         for var in variables:
             test_errors[var] += [test_errors_df[var].mean()]
-    test_errors_df = pd.DataFrame(test_errors, index=trials)
+    test_errors_df = pd.DataFrame(test_errors, index=trials, dtype=object)
     for var in variables:
         test_errors_df.at['avg',var] = test_errors_df[var].mean()
     test_errors_rdf = test_errors_df.copy()
