@@ -28,5 +28,5 @@ reference values:
         other: 1
 used reference values: ['McClure', 'Dartois']
 AICE label: 'AICE (this work)'
-save results: no
+save results: yes
 output file: 'NIR38-aice.csv'
