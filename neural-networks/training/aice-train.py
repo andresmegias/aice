@@ -4,9 +4,9 @@
 -------------------------------------------------
 Automatic Ice Composition Estimator (AICE)  v 1.0
 ------------------------------------------
-Script for training the neural networks
+Script for training the neural networks.
 
-Andrés Megíass
+Andrés Megías
 """
 
 # Libraries.
