@@ -11,7 +11,12 @@ Andrés Megías.
 
 # Files for AICE.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
-weights_path = '/Users/andresmegias/Documents/Astro/Proyectos/AICE/neural-network/training/models/aice-weights.npy'
+weights_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice-weights.npy'
+# Matplotlib backend.
+backend = 'qtagg'
+# possible values: ['gtk3agg', 'gtk3cairo', 'gtk4agg', 'gtk4cairo', 'qtagg',
+#                   'qtcairo', 'qt5agg', 'qt5cairo', 'tkagg', 'tkcairo',
+#                   'webagg', 'wx', 'wxagg', 'wxcairo', 'macosx']
 
 # Libraries.
 import os
@@ -29,6 +34,7 @@ from matplotlib.ticker import ScalarFormatter
 from matplotlib.backend_bases import MouseEvent, KeyEvent
 from scipy.interpolate import UnivariateSpline, PchipInterpolator
 from scipy.stats import median_abs_deviation
+plt.matplotlib.use(backend)
 
 # General functions.
 
@@ -109,30 +115,6 @@ def create_baseline(x, p, smooth_size=1):
     yb = rv.rolling_function(np.mean, yb, smooth_size)   
     return yb
 
-def sigma_clip_mask(y, sigmas=6.0, iters=2):
-    """
-    Apply a sigma clip and return a mask of the remaining data.
-
-    Parameters
-    ----------
-    y : array
-        Input data.
-    sigmas : float, optional
-        Number of deviations used as threshold. The default is 6.0.
-    iters : int, optional
-        Number of iterations performed. The default is 3.
-
-    Returns
-    -------
-    mask : array (bool)
-        Mask of the remaining data after applying the sigma clip.
-    """
-    mask = np.ones(len(y), dtype=bool)
-    abs_y = abs(y)
-    for i in range(iters):
-        mask *= abs_y < sigmas*median_abs_deviation(abs_y[mask], scale='normal')
-    return mask
-
 def axis_conversion(x):
     """Axis conversion from wavenumber to wavelength and viceversa."""
     with np.errstate(divide='ignore'):
@@ -183,46 +165,24 @@ def invert_windows(windows, x):
     windows = get_windows(~mask, x)
     return windows
 
-def calculate_xlims(x_min, x_max, zoom_level, x_zone, rel_margin=0.01,
-                    overlap=0.2):
-    """Calculate horizontal limits for the given zoom level and zone."""
-    num_divisions = 2**zoom_level
-    x_range = x_max - x_min
-    x_step = x_range / num_divisions
-    x_edges = [x_min + i*x_step for i in range(num_divisions+1)]
-    idx = len(x_edges) - x_zone - 1
-    lim1 = x_min - rel_margin*x_step
-    lim2 = x_max + rel_margin*x_step
-    margin = (rel_margin * x_step if zoom_level == 0
-              else (rel_margin + overlap) * x_step)
-    x_lims = [max(lim1, x_edges[idx] - margin),
-              min(lim2, x_edges[idx+1] + margin)]
-    return x_lims
-
 def calculate_ylims(spectra, x_lims=None, perc1=0., perc2=100.,
                     rel_margin_y=0.04):
     """Calculate vertical limits for the given spectra."""
-    absorbances = []
+    yy = []
     for spectrum in spectra:
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         if x_lims is not None:
             x1, x2 = x_lims
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
-            absorbance = absorbance[mask]
-        absorbances = np.concatenate((absorbances, absorbance))
-    absorbances = np.unique(absorbances)
-    y1 = np.nanpercentile(absorbances, perc1)
-    y2 = np.nanpercentile(absorbances, perc2)
+            mask = (x >= x1) & (x <= x2)
+            y = y[mask]
+        yy = np.concatenate((yy, y))
+    yy = np.unique(yy)
+    y1 = np.nanpercentile(yy, perc1)
+    y2 = np.nanpercentile(yy, perc2)
     margin = rel_margin_y * (y2 - y1)
     y_lims = [y1 - margin, y2 + margin]
     return y_lims 
-
-def parse_float(text):
-    """Parse input text as a float."""
-    factor = input('- Enter smoothing factor for baseline: ')
-    factor = int(''.join([char for char in factor if char.isdigit()]))
-    factor = int(factor)
     
 def parse_composition(text, folder):
     """Parse input text as containing species."""
@@ -393,72 +353,105 @@ predefined_macros = {
             smooth factor: 45
         """
     }
+    
+# Graphical options.
+colors = {'edited': 'cornflowerblue', 'baseline': 'darkorange',
+          'baseline-reference': 'chocolate'}
+colormaps = {'original': {'name': 'brg', 'offset': 0.0, 'scale': 0.5},
+             'edited': {'name': 'viridis', 'offset': 0.4, 'scale': 0.6}}
+
+# Default options.
+baseline_smooth_size = 25
+interp_smooth_size = 5
+smooth_size = 5
+sigma_threshold = 5.
+
+# Removing default keymaps for interactive plot.
+keymaps = ('back', 'copy', 'forward', 'fullscreen', 'grid', 'grid_minor',
+           'help', 'home', 'pan', 'quit', 'quit_all', 'save', 'xscale',
+           'yscale', 'zoom')
+for keymap in keymaps:            
+    plt.rcParams.update({'keymap.' + keymap: []})
+    
+# Folder separator.
+sep = '\\' if platform.system() == 'Windows' else '/'
 
 #%% Functions used in interactive mode.
 
 def plot_data(spectra, spectra_old, idx, manual_mode=False):
     """Plot the input spectra."""
     
-    fig = plt.figure(1, figsize=(9,5))
+    fig = plt.figure(1)
     plt.clf()
     
     for spectrum_old in spectra_old:
-        plt.plot(spectrum_old['wavenumber'], spectrum_old['absorbance'],
+        plt.plot(spectrum_old['x'], spectrum_old['y'],
                  color='gray', alpha=0.1, zorder=2.4)
-    plt.plot(spectra_old[idx]['wavenumber'], spectra_old[idx]['absorbance'],
+    plt.plot(spectra_old[idx]['x'], spectra_old[idx]['y'],
              label='original spectrum', color='black', zorder=2.6) 
     spectrum = spectra[idx]
-    if 'baseline' in spectrum:
-        if not np.array_equal(spectra_old[idx]['absorbance'],
-                              spectrum['absorbance-fit']):
-            plt.plot(spectrum['wavenumber-fit'], spectrum['absorbance-fit'],
-                     color='tab:red', zorder=2.5, label='baseline reference')
-        plt.plot(spectrum['wavenumber'], spectrum['baseline'], zorder=2.8,
-                 color='darkorange', linestyle='--', label='baseline fit')
-    if spectrum['modified']:
-        plt.plot(spectrum['wavenumber'], spectrum['absorbance'],
-                 color='darkblue', zorder=2.7, label='edited spectrum')
+    if 'y-base' in spectrum:
+        if not np.array_equal(spectra_old[idx]['x'], spectrum['x-ref']):
+            plt.plot(spectrum['x-ref'], spectrum['y-ref'],
+                     color=colors['baseline-reference'],
+                     zorder=2.5, label='baseline reference')
+        plt.plot(spectrum['x'], spectrum['y-base'], zorder=2.8,
+                 color=colors['baseline'], linestyle='--',
+                 label='fitted baseline')
+    if spectrum['edited']:
+        plt.plot(spectrum['x'], spectrum['y'],
+                 color=colors['edited'], zorder=2.7, label='edited spectrum')
     
-    cmap_old = plt.colormaps['brg']
-    cmap_new = plt.colormaps['viridis']
+    cmap_old = plt.colormaps[colormaps['original']['name']]
+    offset_old = colormaps['original']['offset']
+    scale_old = colormaps['original']['scale']
+    cmap_new = plt.colormaps[colormaps['edited']['name']]
+    offset_new = colormaps['edited']['offset']
+    scale_new = colormaps['edited']['scale']
     num_spectra = len(spectra)
     for (i,spectrum) in enumerate(spectra):
         if i == idx:
             continue
-        color = (cmap_old(0.5 * i / num_spectra) if 'baseline' not in spectrum
-                 else cmap_new(0.4 + 0.6 * i / num_spectra))
-        plt.plot(spectrum['wavenumber'], spectrum['absorbance'], color=color,
-                 alpha=0.2, zorder=2.5)
+        color = (cmap_old(offset_old + scale_old * i/num_spectra)
+                 if 'y-base' not in spectrum
+                 else cmap_new(offset_new + scale_new * i/num_spectra))
+        plt.plot(spectrum['x'], spectrum['y'],
+                 color=color, alpha=0.2, zorder=2.5)
     
     global x_min, x_max, x_lims, y_lims
     plt.xlim(x_lims)
     plt.ylim(y_lims)
-    plt.axhline(y=0, color='black', lw=0.5)
-    plt.xlabel('wavenumber (cm$^{-1}$)', labelpad=6)
-    plt.ylabel('absorbance', labelpad=12)
+    plt.axhline(y=0., color='black', lw=0.5)
+    if variable_y == 'transmittance':
+        plt.axhline(y=1., color='black', lw=0.5)
+    plt.axvline(x=0., color='black', lw=0.5)
+    plt.xlabel('wavenumber (cm$^{-1}$)', labelpad=6.)
+    plt.ylabel(f'{variable_y}', labelpad=12.)
     plt.margins(x=0.01)
     if not manual_mode:
         plt.axvspan(0., 0., 0., 0., edgecolor='lightgray', facecolor='white',
                     alpha=1., label='windows')
     else:
-        plt.plot([], '.', color='chocolate', label='baseline reference')
-    plt.legend(loc='upper left')
+        plt.plot([], '.', color=colors['baseline-reference'],
+                 label='baseline reference')
+    loc = 'upper left' if variable_y == 'absorbance' else 'lower left'
+    plt.legend(loc=loc)
     plt.title(spectra_names[idx], fontweight='bold', pad=12.)
-    
     ax = plt.gca()
     ax.invert_xaxis()
     ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     ax2 = ax.secondary_xaxis('top', functions=(axis_conversion, axis_conversion))
-    wavelength_ticks = [1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8,
-                        10, 12, 15, 20, 40] # μm
+    wavelength_ticks = [1.5, 1.7, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8,
+                        10, 12, 15, 20, 30, 50, 300] # μm
     ax2.set_xticks(wavelength_ticks, wavelength_ticks)
     ax2.set_xlabel('wavelength (μm)', labelpad=6., fontsize=9.)
     
     plt.tight_layout()
-    plt.text(0.98, 0.96, '      AICE Interactive Toolkit' '\n ' ,
+    loc = (0.98, 0.96) if variable_y == 'absorbance' else (0.98, 0.125)
+    plt.text(*loc, '      AICE Interactive Toolkit' '\n ' ,
              ha='right', va='top', fontweight='bold', transform=ax.transAxes,
-             bbox=dict(edgecolor=[0.8]*3, facecolor='white'))
-    plt.text(0.98, 0.96, ' \n' 'check terminal for instructions',
+             bbox=dict(edgecolor=[0.8]*3, facecolor='white', alpha=0.7))
+    plt.text(*loc, ' \n' 'check terminal for instructions',
              ha='right', va='top', transform=ax.transAxes)
     
     plt.gca().set_facecolor([0.9]*3)
@@ -478,32 +471,30 @@ def plot_baseline_points(selected_points):
     """Plot the current selected baseline points."""
     if len(selected_points) > 0:
         x, y = np.array(selected_points).T
-        plt.plot(x, y, '.', color='chocolate', zorder=2.8)
+        plt.plot(x, y, '.', color=colors['baseline-reference'], zorder=2.8)
 
 def do_reduction(spectra, indices, selected_points, smooth_size, manual_mode,
                  interpolation):
-    """Reduce the data."""
+    """Reduce the data fitting a baseline and subtracting it."""
     if len(selected_points) == 0:
         return
     windows = format_windows(selected_points)
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
-        windows = np.append(windows, [wavenumber[:2]], axis=0)
-        windows = np.append(windows, [wavenumber[-2:]], axis=0)
+        x = spectrum['x']
+        y = spectrum['y']
+        windows = np.append(windows, [x[:2]], axis=0)
+        windows = np.append(windows, [x[-2:]], axis=0)
         if not manual_mode:
-            baseline = fit_baseline(wavenumber, absorbance, smooth_size,
-                                    windows, interpolation)
+            y_bl = fit_baseline(x, y, smooth_size, windows, interpolation)
         else:
-            baseline = create_baseline(wavenumber, selected_points,
-                                       smooth_size=3)
-        reduced_absorbance = absorbance - baseline  
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = reduced_absorbance
-        spectra[i]['baseline'] = baseline
-        spectra[i]['wavenumber-fit'] = wavenumber
-        spectra[i]['absorbance-fit'] = absorbance
+            y_bl = create_baseline(x, selected_points, smooth_size)
+        y_red = y - y_bl if variable_y == 'absorbance' else y / y_bl
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y_red
+        spectra[i]['y-base'] = y_bl
+        spectra[i]['x-ref'] = x
+        spectra[i]['y-ref'] = y
 
 def do_removal(spectra, indices, selected_points, smooth_size):
     """Remove the selected regions of the data."""
@@ -512,28 +503,27 @@ def do_removal(spectra, indices, selected_points, smooth_size):
     windows = format_windows(selected_points)
     for i in indices: 
         spectrum = spectra[i]
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
-        baseline = spectrum['baseline'] if 'baseline' in spectrum else None
+        x = spectrum['x']
+        y = spectrum['y']
+        y_bl = spectrum['y-base'] if 'y-base' in spectrum else None
         for (x1,x2) in windows:
-            is_inferior_edge = x1 <= np.min(wavenumber)
-            is_superior_edge = x2 >= np.max(wavenumber)
+            is_inferior_edge = x1 <= np.min(x)
+            is_superior_edge = x2 >= np.max(x)
             if is_inferior_edge or is_superior_edge:
-                mask = (wavenumber >= x2 if is_inferior_edge
-                        else wavenumber <= x1)
-                wavenumber = wavenumber[mask]
-                absorbance = absorbance[mask]
-                baseline = baseline[mask] if 'baseline' in spectrum else None
+                mask = (x >= x2 if is_inferior_edge else x <= x1)
+                x = x[mask]
+                y = y[mask]
+                y_bl = y_bl[mask] if 'y-base' in spectrum else None
             else:
-                mask = (wavenumber >= x1) & (wavenumber <= x2)
-                windows_ = invert_windows(windows, wavenumber)
-                absorbance[mask] = fit_baseline(wavenumber, absorbance,
-                            smooth_size, windows_, interpolation='pchip')[mask]
-        spectra[i]['modified'] = True
-        spectra[i]['wavenumber'] = wavenumber
-        spectra[i]['absorbance'] = absorbance
-        if 'baseline' in spectrum:
-            spectra[i]['baseline'] = baseline
+                mask = (x >= x1) & (x <= x2)
+                windows_ = invert_windows(windows, x)
+                y[mask] = fit_baseline(x, y, smooth_size, windows_,
+                                       interpolation='pchip')[mask]
+        spectra[i]['edited'] = True
+        spectra[i]['x'] = x
+        spectra[i]['y'] = y
+        if 'y-base' in spectrum:
+            spectra[i]['y-base'] = y_bl
 
 def do_smoothing(spectra, indices, selected_points, smooth_size,
                  function=np.mean):
@@ -544,14 +534,13 @@ def do_smoothing(spectra, indices, selected_points, smooth_size,
     windows = format_windows(selected_points)
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         for (x1,x2) in windows:
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
-            absorbance[mask] = rv.rolling_function(function, absorbance[mask],
-                                                   smooth_size)
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = absorbance
+            mask = (x >= x1) & (x <= x2)
+            y[mask] = rv.rolling_function(function, y[mask], smooth_size)
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
         
 def do_multiplication(spectra, indices, selected_points, factor):
     """Multiply the data in the selected regions with the input factor.""" 
@@ -561,13 +550,13 @@ def do_multiplication(spectra, indices, selected_points, factor):
     windows = format_windows(selected_points)
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         for (x1,x2) in windows:
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
-            absorbance[mask] = factor * absorbance[mask]
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = absorbance
+            mask = (x >= x1) & (x <= x2)
+            y[mask] = factor * y[mask]
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
         
 def set_zero(spectra, indices, selected_points, only_negatives=False):
     """Set selected region of the data to zero."""
@@ -581,15 +570,37 @@ def set_zero(spectra, indices, selected_points, only_negatives=False):
     windows = format_windows(selected_points)
     for i in indices:
         spectrum = spectra[i]
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         for (x1,x2) in windows:
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
+            mask = (x >= x1) & (x <= x2)
             if only_negatives:
-                mask &= absorbance < 0.
-            absorbance[mask] = 0.
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = absorbance
+                mask &= y < 0.
+            y[mask] = 0.
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
+        
+def set_one(spectra, indices, selected_points, only_gtr1=False):
+    """Set selected region of the data to one."""
+    if selected_points == []:
+        if only_gtr1:
+            global x_min, x_max
+            selected_points = [x_max, x_min]
+        else:
+            print('Error: No points selected.')
+            return
+    windows = format_windows(selected_points)
+    for i in indices:
+        spectrum = spectra[i]
+        x = spectrum['x']
+        y = spectrum['y']
+        for (x1,x2) in windows:
+            mask = (x >= x1) & (x <= x2)
+            if only_gtr1:
+                mask &= y > 1.
+            y[mask] = 1.
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
 
 def add_noise(spectra, indices, selected_points, noise_level):
     """Add noise to the selected regions.""" 
@@ -598,15 +609,15 @@ def add_noise(spectra, indices, selected_points, noise_level):
         selected_points = [x_max, x_min]
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         windows = format_windows(selected_points)
         for (x1,x2) in windows:
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
+            mask = (x >= x1) & (x <= x2)
             noise = np.random.normal(0., scale=noise_level, size=sum(mask))
-            absorbance[mask] = absorbance[mask] + noise
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = absorbance
+            y[mask] = y[mask] + noise
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
 
 def do_sigma_clip(spectra, indices, selected_points, threshold,
                   smooth_size=1, iters=3):
@@ -616,17 +627,17 @@ def do_sigma_clip(spectra, indices, selected_points, threshold,
         selected_points = [x_max, x_min]
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
+        x = spectrum['x']
+        y = spectrum['y']
         windows = format_windows(selected_points)
         for (x1,x2) in windows:
-            mask = (wavenumber >= x1) & (wavenumber <= x2)
+            mask = (x >= x1) & (x <= x2)
             for j in range(iters):
-                limit = threshold * median_abs_deviation(absorbance[mask])
-                mask &= (np.abs(absorbance) > limit)
-            absorbance[mask] = np.nan
-        spectra[i]['modified'] = True
-        spectra[i]['absorbance'] = absorbance
+                limit = threshold * median_abs_deviation(y[mask])
+                mask &= (np.abs(y) > limit)
+            y[mask] = np.nan
+        spectra[i]['edited'] = True
+        spectra[i]['y'] = y
         
 def integrate_spectrum(spectrum, selected_points, factor=1.):
     """Integrate the spectrum."""
@@ -634,33 +645,33 @@ def integrate_spectrum(spectrum, selected_points, factor=1.):
         print('Error: No points selected.')
         return
     windows = format_windows(selected_points)
-    wavenumber = spectrum['wavenumber']
-    absorbance = spectrum['absorbance']
+    x = spectrum['x']
+    y = spectrum['y']
     area = 0.
     for (x1,x2) in windows:
-        mask = (wavenumber >= x1) & (wavenumber <= x2)
-        area += np.trapz(absorbance[mask], wavenumber[mask])
+        mask = (x >= x1) & (x <= x2)
+        area += np.trapz(y[mask], x[mask])
     area /= factor
     return area
         
-def do_resampling(spectra, indices, new_wavenumber):
+def do_resampling(spectra, indices, x_new):
     """Resample the spectra to the input wavenumber array.""" 
     for i in indices:
         spectrum = spectra[i] 
-        wavenumber = spectrum['wavenumber']
-        absorbance = spectrum['absorbance']
-        new_absorbance = np.interp(new_wavenumber, wavenumber, absorbance)
-        spectra[i]['modified'] = True
-        spectra[i]['wavenumber'] = new_wavenumber
-        spectra[i]['absorbance'] = new_absorbance
+        x = spectrum['x']
+        y = spectrum['y']
+        y_new = np.interp(x_new, x, y)
+        spectra[i]['edited'] = True
+        spectra[i]['x'] = x_new
+        spectra[i]['y'] = y_new
         
 def save_files(spectra, data_log, action_log, files, baseline=False):
     """Save processed spectra."""
     
     global columns
-    nondone_fits = np.array([not spectrum['modified'] for spectrum in spectra])
+    nondone_fits = np.array([not spectrum['edited'] for spectrum in spectra])
     suffix = '-reduced' if not baseline else '-baseline'
-    intensity_variable = 'absorbance' if not baseline else 'baseline'
+    intensity_variable = 'y' if not baseline else 'y-base'
     if all(nondone_fits):
         print('\nNo processing was performed.\n')
         suffix = ''
@@ -684,18 +695,18 @@ def save_files(spectra, data_log, action_log, files, baseline=False):
             filename = folder + filename
         if not filename.endswith('.csv'):
             filename += '.csv'
-        wavenumbers = [spectrum['wavenumber'] for spectrum in spectra]
-        i = np.argmax([len(wavenumber) for wavenumber in wavenumbers])
-        wavenumber = wavenumbers[i]
-        new_df = pd.DataFrame({'wavenumber (/cm)': wavenumber})
+        xx = [spectrum['x'] for spectrum in spectra]
+        i = np.argmax([len(x) for x in xx])
+        x = xx[i]
+        new_df = pd.DataFrame({'wavenumber (/cm)': x})
         for (i,spectrum) in enumerate(spectra):
             column = columns[i]
-            wavenumber_i = spectrum['wavenumber']
-            absorbance_i = spectrum[intensity_variable]
-            absorbance_i = np.interp(wavenumber, wavenumber_i, absorbance_i)
-            new_df[column] = absorbance_i
-        nd = max([len(x.split('.')[-1]) if '.' in x else 0
-                  for x in wavenumber.astype(str)])
+            x_i = spectrum['x']
+            y_i = spectrum[intensity_variable]
+            y_i = np.interp(x, x_i, y_i)
+            new_df[column] = y_i
+        nd = max([len(xi.split('.')[-1]) if '.' in xi else 0
+                  for xi in x.astype(str)])
         new_df['wavenumber (/cm)'] = new_df['wavenumber (/cm)'].map(
                                                 lambda x: '{:.{}f}'.format(x, nd))
         new_df.to_csv(filename, index=False, float_format='%.3e')
@@ -718,15 +729,15 @@ def save_files(spectra, data_log, action_log, files, baseline=False):
                         for file in files]
         for (i,filename) in enumerate(output_files):
             spectrum = spectra[i]
-            wavenumber = spectrum['wavenumber']
-            absorbance = spectrum[intensity_variable]
-            data = np.array([wavenumber, absorbance]).transpose()
-            inds = np.argsort(wavenumber)
+            x = spectrum['x']
+            y = spectrum['y']
+            data = np.array([x, y]).transpose()
+            inds = np.argsort(x)
             data = data[inds]
-            nd = max([len(x.split('.')[-1]) if '.' in x else 0
-                      for x in wavenumber.astype(str)])
+            nd = max([len(xi.split('.')[-1]) if '.' in xi else 0
+                      for xi in x.astype(str)])
             np.savetxt(filename, data, fmt='%.{}f %.3e'.format(nd),
-                       header='wavenumber (/cm)   absorbance')
+                       header=f'wavenumber_(/cm) {variable_y}')
             saved_var = 'spectrum' if not baseline else 'baseline'
             print('Saved {} in {}.'.format(saved_var, filename))
         output_files = [file.split(sep)[-1] for file in output_files]
@@ -832,8 +843,8 @@ def click2(event):
             if button in ('left', '1'):
                 y = event.ydata
                 selected_points += [[x, y]]
-                plt.plot(x, y, '.', color='chocolate', zorder=2.8)
-            elif button in ('right', '3'):
+                plt.plot(x, y, '.', color=colors['baseline-reference'], zorder=2.8)
+            else:
                 if len(selected_points) == 0:
                     return
                 xp, yp = np.array(selected_points).T
@@ -876,7 +887,7 @@ def click2(event):
             action_info = {'action': 'modify windows', 'windows': windows}
         else:
             points = []
-            for (x, y) in selected_points:
+            for (x,y) in selected_points:
                 points += ['({:.2f}, {:.4g})'.format(x, y)]
             action_info = {'action': 'modify points', 'points': points}
         action_log = action_log[:jlog+1] + [copy.deepcopy(action_info)]
@@ -968,19 +979,13 @@ def press_key(event):
                 x_lims = [x_lims[0] + x_range/4, x_lims[1] - x_range/4]
             else:
                 x_lims = [x_lims[1] - 2*x_range, x_lims[1] + 2*x_range]
-                ylims1 = calculate_ylims(spectra, x_lims, perc1=0.5)
-                ylims2 = calculate_ylims(original_spectra, x_lims,
-                                         perc1=0.5)
-                y_lims = [min(ylims1[0], ylims2[0]),  max(ylims1[1], ylims2[1])]
         else:
             if event.key == 'left' and x_lims[1] != old_x_lims[1]:
-                x_lims = [x_lims[0] + x_range, x_lims[1] + x_range]
+                x_lims = [x_lims[0] + x_range/2, x_lims[1] + x_range/2]
             elif event.key == 'right' and x_lims[0] != old_x_lims[0]:
-                x_lims = [x_lims[0] - x_range, x_lims[1] - x_range]
+                x_lims = [x_lims[0] - x_range/2, x_lims[1] - x_range/2]
         x_lims = [max(old_x_lims[0], x_lims[0]),
                   min(old_x_lims[1], x_lims[1])]
-        if x_lims == old_x_lims:
-            y_lims = old_y_lims
     elif event.key in ('up', 'down'):
         if len(spectra) > 1:
             idx = idx+1 if event.key == 'up' else idx-1
@@ -1041,6 +1046,7 @@ def press_key(event):
             factor = int(''.join([char for char in text if char.isdigit()]))
         function = np.median if 'ctrl' in event.key else np.mean
         do_smoothing(spectra, indices, selected_points, factor, function)
+        print('Smoothed regions in current windows.')
         action_info = {'action': 'smooth', 'smooth factor': factor}
         if 'ctrl' in event.key:
             action_info['action'] = 'median smooth'
@@ -1054,7 +1060,7 @@ def press_key(event):
         if selected_points == []:
             print('Error: No points selected.')
         else:
-            print('Interpolated/removed areas in present windows.')
+            print('Interpolated/removed regions in current windows.')
         action_info = {'action': 'remove/interpolate', 'smooth factor': factor}
     elif event.key in ('n', 'N'):
         if not macro_event:
@@ -1088,16 +1094,19 @@ def press_key(event):
             area_variable = 'area'
             area_units = '/cm'
         area = integrate_spectrum(spectra[idx], selected_points, factor)
-        print('Integrated {}: {:.2e} {}'.format(area_variable, area, area_units))
+        if area is not None:
+            print('Integrated {}: {:.2e} {}'.format(area_variable, area, area_units))
     elif event.key == 'p':
         global weights, weights_path
         if weights is None:
-            print('Could not find AICE weights file in {}.'.format(weights_path))
+            print('Could not find AICE weights in {}.'.format(weights_path))
+        elif variable_y == 'transmittance':
+            print('Cannot predict composition in transmittance.')
         else:
             spectrum = spectra[idx]
             wavenumber = np.arange(980., 4001., 1.)
             absorbance = np.interp(wavenumber,
-                                spectrum['wavenumber'], spectrum['absorbance'])
+                                spectrum['x'], spectrum['y'])
             absorbance = np.nan_to_num(absorbance, nan=0.)
             absorbance /= np.nanmean(absorbance)
             predictions_df = aice_model(absorbance, weights)
@@ -1106,18 +1115,23 @@ def press_key(event):
         data_log = data_log[:ilog+1]
         action_log = action_log[:jlog+1]
         save_files(spectra, data_log, action_log, files, baseline=True)
+        print('Saved current baseline in a text file.')
     elif event.key == '-':
         params = input('- Enter new wavenumber array to resample'
                        ' (initial wavenumber, final wavenumber, step): ')
-        params = params.replace('(','').replace(')','').replace(' ','')
-        params = params.split(',')
-        x1x2 = np.array(params[:2], float)
-        step = float(params[2])
-        x1, x2 = min(x1x2), max(x1x2)
-        new_wavenumber = np.arange(x1, x2, step)
-        do_resampling(spectra, indices, new_wavenumber)
-        action_info = {'action': 'resample',
-            'wavenumber array (start, end, step)': list(params)}
+        if params != '':
+            params = params.replace('(','').replace(')','').replace(' ','')
+            params = params.split(',')
+            x1x2 = np.array(params[:2], float)
+            step = float(params[2])
+            x1, x2 = min(x1x2), max(x1x2)
+            new_wavenumber = np.arange(x1, x2, step)
+            do_resampling(spectra, indices, new_wavenumber)
+            action_info = {'action': 'resample',
+                'wavenumber array (start, end, step)': list(params)}
+        else:
+            event.key == ''
+            action_info = None
     elif event.key in ('0', '='):
         if not manual_mode:
             if event.key == '0':
@@ -1127,11 +1141,30 @@ def press_key(event):
                 only_negatives = True
                 action_info = {'action': 'set negatives to zero'}
             set_zero(spectra, indices, selected_points, only_negatives)
+            if only_negatives:
+                print('Negative values of region in current windows set to 0.')
+            else:
+                print('Region in current windows set to 0.')
         else:
             action_info = {'action': 'modify points'}
             for x in np.linspace(x_min, x_max, 40):
                 selected_points += [[x, 0.]] 
-    elif event.key in ('1') and not manual_mode:
+    elif event.key in ('1', '!'):
+        if variable_y == 'transmittance':
+            if event.key == '1':
+                only_gtr1 = False
+                action_info = {'action': 'set to one'}
+            else:
+                only_gtr1 = True
+                action_info = {'action': 'set one as maximum'}
+            set_one(spectra, indices, selected_points, only_gtr1)
+            if only_gtr1:
+                print('Values greater than 1 of region in current windows set to 1.')
+            else:
+                print('Region in current windows set to 1.')
+        else:
+            action_info = None
+    elif event.key in ('J') and not manual_mode:
         individual_mode = not individual_mode
         if individual_mode:
             indices = [idx]
@@ -1143,7 +1176,6 @@ def press_key(event):
             print('- Processing mode has changed to joint.')
             action_info = {'action': 'activate joint processing mode'}
     elif event.key == '.':
-        print(selected_points)
         manual_mode = not manual_mode
         if len(spectra) > 1:
             if indices != [idx]:
@@ -1228,6 +1260,10 @@ def press_key(event):
         jlog = (max(0, jlog-1) if 'z' in event.key
                 else min(len(action_log)-1, jlog+1))
         action_info = copy.deepcopy(action_log[jlog-1])
+        if 'z' in event.key:
+            print('Action undone.')
+        else:
+            print('Action redone.')
         k_ = copy.copy(k)
         if 'z' in event.key and macro_event_prev:
             k = max(0, k-1)
@@ -1237,15 +1273,19 @@ def press_key(event):
             action_text = str(macro_actions[k])[1:-1].replace("'","")
             print('Next action: {}'.format(action_text))
     if event.key in ('r', 'R', 'ctrl+r', 'ctrl+R', 's', 'S', 'ctrl+s', 'ctrl+S',
-                'x', 'X', 'n', 'N', 'c', 'C', 'f', '0', '=', 'w', 'W', 'ctl+W',
-                '-', 'backspace', '.', '1', 'up', 'down', 'tab'):
-        if event.key not in ('.', 'i', '1', 'up', 'down', 'tab'):
+                'x', 'X', 'n', 'N', 'c', 'C', 'f', '0', '=', '1', '!',
+                'w', 'W', 'ctl+W', '-', 'backspace', '.', 'J',
+                'up', 'down', 'tab'):
+        if action_info is None:
+            pass
+        elif event.key not in ('.', 'i', 'J', 'up', 'down', 'tab'):
             data = {'spectra': spectra, 'idx': idx, 'indices': indices,
                 'all_indices': all_indices, 'spectra_names': spectra_names,
                 'selected_points': selected_points, 'macro_event': macro_event}
             data_log = data_log[:ilog+1] + [copy.deepcopy(data)]
             ilog += 1
-        if not individual_mode and event.key in ('up', 'down'):
+        if (not individual_mode and event.key in ('up', 'down')
+            or action_info is None):
             pass
         else:
             action_log = action_log[:jlog+1] + [copy.deepcopy(action_info)]
@@ -1261,7 +1301,6 @@ def press_key(event):
         print('Macro finished.\n')
     plt.draw()
 
-
 #%% Initialization.
 
 print('------------------------------------------')
@@ -1270,43 +1309,41 @@ print('------------------------------------------')
 print('Interactive Toolkit')
 print()
 
-# Default options.
-baseline_smooth_size = 25
-interp_smooth_size = 1
-smooth_size = 5
-sigma_threshold = 5.
-keymaps = ('back', 'copy', 'forward', 'fullscreen', 'grid', 'grid_minor',
-           'help', 'home', 'pan', 'quit', 'quit_all', 'save', 'xscale',
-           'yscale', 'zoom')
-for keymap in keymaps:            
-    plt.rcParams.update({'keymap.' + keymap: []})
-sep = '\\' if platform.system() == 'Windows' else '/'  # folder separator
-
 # Weights of AICE.
-weights = np.load(weights_path, allow_pickle=True)
 try:
     weights = np.load(weights_path, allow_pickle=True)
 except:
     weights = None
 
 # Reading of the arguments.
-if len(sys.argv) == 1:
-    path = input('Drag the input file: ')
-    print()
-    # folder = sep.join(sys.argv[0].split(sep)[:-1])
-    folder = sep.join(path.split(sep)[:-1]).replace('\\','')
-    if os.getcwd() != folder:
-        os.chdir(folder)
-    path = path.split(sep)[-1].replace('\\','')
-    if path.endswith(' '):
-        path = path[:-1]
-    file_paths = [path]
-else:
-    file_paths = []
-    for (i,arg) in enumerate(sys.argv[1:]):
-        if arg == '--flux':
-            using_flux = True
+variable_y = 'absorbance'
+args = copy.copy(sys.argv)
+i = 0
+while i < len(args):
+    arg = args[i]
+    if arg == '-T':
+        variable_y = 'transmittance'
+        del args[i]
+    else:
+        i += 1
+file_paths = []
+if len(args) > 1:
+    for arg in args[1:]:
         file_paths += [arg]
+else:
+    text = input('Drag the input file(s): ')
+    print()
+    if text.endswith(' '):
+        text = text[:-1]
+    text_ = text.replace(r'\ ', r'\_')
+    paths_ = text_.split(' ')
+    for path_ in paths_:
+        path = path_.replace(r'\_', r'\ ')
+        folder = sep.join(path.split(sep)[:-1]).replace('\\', '')
+        if os.getcwd() != folder:
+            os.chdir(folder)
+        filename = path.split(sep)[-1].replace('\\', '')
+        file_paths += [filename]
 
 #%% Reading of the data files.
 
@@ -1346,7 +1383,7 @@ if use_table_format_for_input:
         y = data[:,i+1]
         if revert_spectra:
             y = y[::-1]
-        spectrum = {'wavenumber': x, 'absorbance': y, 'modified': False}
+        spectrum = {'x': x, 'y': y, 'edited': False}
         spectra += [spectrum]
         spectra_names += [name]
 else:
@@ -1368,7 +1405,7 @@ else:
         x = x[inds]
         y = y[inds]
         dy = dy[inds]
-        spectrum = {'wavenumber': x, 'absorbance': y, 'modified': False}
+        spectrum = {'x': x, 'y': y, 'edited': False}
         spectra += [spectrum]
         spectra_names += [name]
         i += 1
@@ -1381,12 +1418,12 @@ if folder == '/':
     folder = ''
 
 # Ranges and limits for plots.
-absorbances = np.concatenate(tuple([spectrum['absorbance'] for spectrum in spectra]))
-wavenumbers = np.concatenate(tuple([spectrum['wavenumber'] for spectrum in spectra]))
-mask = np.isfinite(absorbances)
-wavenumbers_mask = wavenumbers[mask]
-x_min = wavenumbers_mask.min()
-x_max = wavenumbers_mask.max()
+yy = np.concatenate(tuple([spectrum['y'] for spectrum in spectra]))
+xx = np.concatenate(tuple([spectrum['x'] for spectrum in spectra]))
+mask = np.isfinite(yy)
+x_mask = xx[mask]
+x_min = x_mask.min()
+x_max = x_mask.max()
 x_range = x_max - x_min
 margin = 0.015 * x_range
 x_lims = [x_min - margin, x_max + margin]
@@ -1399,9 +1436,9 @@ old_y_lims = copy.copy(y_lims)
 old_x_lims = copy.copy(x_lims)
 residuals = []
 for spectrum in spectra:
-    absorbance = spectrum['absorbance']
-    absorbance_smoothed = rv.rolling_function(np.mean, absorbance, size=7)
-    residuals += [np.abs(absorbance - absorbance_smoothed)]
+    y = spectrum['y']
+    y_smoothed = rv.rolling_function(np.mean, y, size=7)
+    residuals += [np.abs(y - y_smoothed)]
 residuals = np.concatenate(tuple(residuals))
 noise_level = 0.5 * median_abs_deviation(residuals, scale='normal')
 
@@ -1416,46 +1453,47 @@ use_table_format_for_output = True
 
 #%% Loading the interactive mode.
     
-print('Press Z to zoom, Right/Left to move through the spectrum,'
+print('- Press Z to zoom, Right/Left to move through the spectrum,'
       ' and Shift+Z or < to unzoom. '
       'Press Y to adapt the vertical range to display the spectra, or'
       ' Control+Y to adapt only to the selected spectrum, or Shit+Y to'
       ' restore the original limits. '
-      'Press Up/Down to switch spectrum in case there is more than one. '
-      'Left click to select a window edge, right click to undo or remove the'
-      ' window over the pointer, or Tab to remove all the windows. '
-      'Press R to reduce the data fitting a baseline in the selected windows,'
+      'Press Up/Down to switch spectrum in case there is more than one.\n'
+      '- Left click to select a window edge, right click to undo or remove the'
+      ' window over the pointer, or Tab to remove all the windows.\n'
+      '- Press R to reduce the data fitting a baseline in the selected windows,'
       ' or Shift+R to specify the smoothing factor for the baseline'
       ' and reduce; alternatively, press . to manually select the baseline'
       ' points. '
-      'Press S to smooth the data in the selected windows, or Shift+S to'
-      ' to specify the smoothing factor and smooth. '
-      'Press X to remove the selected windows and interpolate if possible, or'
-      ' Shift+X to specify a smoothing factor the interpolation and apply it. '
-      'Press N to add gaussian noise in the selected windows, or Shift+N to'
-      ' specify the standard deviation and add it. '
-      'Press C to apply a sigma clipping on the selected windows, or Shift+C'
-      ' to specify the threshold and apply the sigma clip. '
-      'Press F to multiply the selected regions by the specified factor. '
-      'Press W to automatically add windows depending on the molecules present'
-      ' in the file name, or Shift+W to add a molecule manually. '
-      'Press P to use AICE to predict the composition of the ice. '
-      'Press Ctrl+B to save the current baseline(s). '
-      'Press I to integrate the selected spectrum in the current window, or'
-      ' Shift+I to introduce a band strength and integrate the column density. '
-      'Press 0 to set the selected windows to zero, or Shift+0 (or =) to only'
+      'Press Ctrl+B to save the current baseline(s).\n'
+      '- Press S to smooth the data in the selected windows, or Shift+S to'
+      ' to specify the smoothing factor and smooth.\n'
+      '- Press X to remove the selected windows and interpolate if possible, or'
+      ' Shift+X to specify a smoothing factor the interpolation and apply it.\n'
+      '- Press N to add Gaussian noise in the selected windows, or Shift+N to'
+      ' specify the standard deviation and add it.\n'
+      '- Press C to apply a sigma clipping on the selected windows, or Shift+C'
+      ' to specify the threshold and apply the sigma clip.\n'
+      '- Press 0 to set the selected windows to zero, or Shift+0 (or =) to only'
       ' do so for negative absorbance values; if using manual selection of'
-      ' points, this will automatically select a set of uniform zero points. '
-      'Press - to resample the spectra to the given wavenumber array. '
-      'Press 1 to activate individual processing mode or restore joint mode. '
-      'Press T to use a table format when exporting the spectra. '
-      'Press Delete to remove selected spectrum from the file (if possible). '
-      'Press M to load a macro/algorithm to apply, or Shift+M to use one of'
-      ' the default ones. '
-      'Press Control+Z to undo, or Control+Shift+Z to redo. '
-      'To save the files and exit, press Ctrl+Enter. '
-      'To cancel and exit, press Escape. '
-      'If you write anything on the terminal, you should then click on the'
+      ' points, this will automatically select a set of uniform zero points.\n'
+      '- Press W to automatically add windows depending on the molecules present'
+      ' in the file name, or Shift+W to add a molecule manually.\n'
+      '- Press P to use AICE to predict the composition of the ice.\n'
+      '- Press I to integrate the selected spectrum in the current window, or'
+      ' Shift+I to introduce a band strength and integrate the column density.\n'
+      '- Press F to multiply the selected regions by the specified factor.\n'
+      '- Press - to resample the spectra to the given wavenumber array.\n'
+      '- Press J to activate individual processing mode or restore joint mode.\n'
+      '- Press T to use a table format when exporting the spectra or to use'
+      ' to individual files.\n'
+      '- Press Delete to remove selected spectrum from the file.\n'
+      '- Press M to load a macro/algorithm to apply, or Shift+M to use one of'
+      ' the default ones.\n'
+      '- Press Control+Z to undo, or Control+Shift+Z to redo.\n'
+      '- To save the files and exit, press Ctrl+Enter.\n'
+      '- To cancel and exit, press Escape or close the plot window.\n'
+      '- If you write anything on the terminal, you should then click on the'
       ' plot window before pressing any key.\n')
 
 num_spectra = len(spectra)
@@ -1476,9 +1514,11 @@ data_log = [copy.deepcopy(data)]
 action_log = [{'action': 'start'}]
 macro_actions = []
 
+plt.figure(1, figsize=(9,5))
 fig = plot_data(spectra, spectra_old, idx)
 fig.canvas.mpl_connect('button_press_event', click1)
 fig.canvas.mpl_connect('button_release_event', click2)
 fig.canvas.mpl_connect('key_press_event', press_key)
 
 plt.show()
+print()
