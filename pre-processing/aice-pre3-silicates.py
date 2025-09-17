@@ -153,7 +153,7 @@ if fit_silicate:
         silicate = optool.particle(optool_path + '{} -a {}'
                                    .format(comp, grain_size))
         sil_wavelength = silicate.lam
-        sil_abscoeff = silicate.kabs.flatten()
+        sil_abscoeff = silicate.kabs.flatten() + silicate.ksca.flatten()
         mask = (sil_wavelength >= xrange[0]) & (sil_wavelength <= xrange[1])
         sil_wavelength = sil_wavelength[mask]
         sil_abscoeff = sil_abscoeff[mask]
