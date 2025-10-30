@@ -4,4 +4,4 @@ Python tool based on artificial neural networks intended to analyse infrared abs
 
 This tool is presented in the following scientific paper: https://ui.adsabs.harvard.edu/abs/2025A%26A...702A..87M/.
 
-A user guide is planned to be written and uploaded to the repository in the followings weeks/months.
+A user guide is planned to be written and uploaded to the repository in the followings months.
