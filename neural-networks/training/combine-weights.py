@@ -16,7 +16,7 @@ import numpy as np
        
 model_variables = ['temp', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
 model_seeds = [1,2,3,4,5,6,7,8,9,10]    
-model_name = 'aice-lite'
+model_name = 'aice'
     
 all_models_available = True
 weights = []
