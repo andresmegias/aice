@@ -11,21 +11,23 @@ Andrés Megías.
 
 # AICE parameters.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
-weights_path = ''
-aice_xrange_params = [2000., 4001., 1.]  # /cm
+weights_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice-lite-weights.npy'
+aice_xrange_params = [2100., 3751., 1.]  # /cm
+aice_resolution = 2.  # /cm
 # Matplotlib backend.
 backend = 'qtagg'
 # Graphical options.
 colors = {'edited': 'cornflowerblue', 'baseline': 'darkorange',
-          'baseline-reference': 'chocolate', 'selected-points': 'crimson'}
+          'selected-points': 'crimson', 'lines': 'tab:red'}
 colormaps = {'original': {'name': 'brg', 'offset': 0.0, 'scale': 0.5},
              'edited': {'name': 'viridis', 'offset': 0.4, 'scale': 0.6}}
+ds = drawstyle = 'steps-mid'
 dlw = default_linewidth = 2.0
 rel_margin_x = 0.015
 rel_margin_y = 0.040
 # Default reduction options.
 baseline_smooth_size = 21
-interp_smooth_size = 7
+interp_smooth_size = 9
 smooth_size = 5
 # Number of actions stored in cache for undo/redo.
 max_actions_stored = 80
@@ -107,6 +109,8 @@ import numpy as np
 import pandas as pd
 import richvalues as rv
 import matplotlib.pyplot as plt
+import scipy.optimize
+from types import SimpleNamespace
 from matplotlib.ticker import ScalarFormatter, LogLocator
 from matplotlib.backend_bases import MouseEvent, KeyEvent
 from scipy.interpolate import UnivariateSpline, PchipInterpolator
@@ -143,21 +147,22 @@ def fit_baseline(x, y, smooth_size=1, windows=None, interpolation='spline'):
     if interpolation not in ('spline', 'pchip'):
         raise Exception("Wrong interpolation type. Should be 'spline' or 'pchip'.")
     if interpolation == 'pchip':
-        y = rv.rolling_function(np.nanmean, y, smooth_size)
+        y = rv.rolling_function(np.nanmedian, y, smooth_size)
+    np_isfinite_y = np.isfinite(y)
     if windows is None:
-        x_ = copy.copy(x)
-        y_ = copy.copy(y)
+        mask = np_isfinite_y
+        x_ = x[mask]
+        y_ = y[mask]
     else:
         mask = np.zeros(len(x), bool)
-        np_isfinite_y = np.isfinite(y)
-        for (x1,x2) in windows:
+        for (x1, x2) in windows:
             mask |= (x >= x1) & (x <= x2) & np_isfinite_y
         x_ = x[mask]
         y_ = y[mask]
     if interpolation == 'pchip':
         spl = PchipInterpolator(x_, y_)
     elif interpolation == 'spline':
-        y_s = rv.rolling_function(np.nanmedian, y_, smooth_size)
+        y_s = rv.rolling_function(np.median, y_, smooth_size)
         s = np.nansum((y_s-y_)**2)
         k = len(y_)-1 if len(y_) <= 3 else 3
         spl = UnivariateSpline(x_, y_, s=s, k=k)
@@ -250,13 +255,17 @@ def invert_windows(windows, x):
 def calculate_ylims(spectra, x_lims, perc1=0., perc2=100., rel_margin=0.):
     """Calculate vertical limits for the given spectra."""
     yy = np.array([], float)
+    x1, x2 = x_lims
     for spectrum in spectra:
         x = spectrum['x']
         y = spectrum['y']
-        x1, x2 = x_lims
-        mask = (x >= x1) & (x <= x2) & np.isfinite(y)
-        y = y[mask]
-        yy = np.append(yy, y)
+        mask = (x >= x1) & (x <= x2)
+        mask_ = mask & np.isfinite(y)
+        yy = np.append(yy, y[mask_])
+        if 'y-lines' in spectrum:
+            y_lines = spectrum['y-lines']
+            mask_ = mask & np.isfinite(y_lines)
+            yy = np.append(yy, y_lines[mask_])
     y1 = np.percentile(yy, perc1)
     y2 = np.percentile(yy, perc2)
     if rel_margin > 0.:
@@ -270,12 +279,17 @@ def calculate_ylims(spectra, x_lims, perc1=0., perc2=100., rel_margin=0.):
 def calculate_robust_ylims(spectra, x_lims, perc1=0., perc2=100., rel_margin=0.):
     """Compute robust vertical limits for the given spectra."""
     yy = np.array([], float)
+    x1, x2 = x_lims
     for spectrum in spectra:
         x = spectrum['x']
         y = spectrum['y']
-        x1, x2 = x_lims
-        mask = (x >= x1) & (x <= x2) & np.isfinite(y)
-        yy = np.append(yy, y[mask])
+        mask = (x >= x1) & (x <= x2)
+        mask_ = mask & np.isfinite(y)
+        yy = np.append(yy, y[mask_])
+        if 'y-lines' in spectrum:
+            y_lines = spectrum['y-lines']
+            mask_ = mask & np.isfinite(y_lines)
+            yy = np.append(yy, y_lines[mask_])
     yy = np.unique(yy)
     y_min = np.min(yy)
     y_max = np.max(yy)
@@ -373,9 +387,16 @@ def aice_model(wavenumber, absorbance, wavenumber_aice, weights):
         a3 = ga3 * (a3 - m3) / (s3 + e)**0.5 + be3
         y = end_act(np.dot(w4.T, a3) + b4)
         return y
-    absorbance_aice = resample_spectrum(wavenumber_aice, wavenumber, absorbance)
+    baseline = fit_baseline(wavenumber, absorbance, smooth_size=3)
+    mask = np.isnan(absorbance)
+    absorbance_ = copy.copy(absorbance)
+    absorbance_[mask] = baseline[mask]
+    absorbance_aice = resample_spectrum(wavenumber_aice, wavenumber, absorbance_,
+                                        supersample_linearly=True)
     absorbance_aice = np.nan_to_num(absorbance_aice, nan=0.)
-    absorbance_aice /= np.nanmean(absorbance_aice)
+    size = int(round(aice_resolution / aice_xrange_params[-1]))
+    absorbance_aice = rv.rolling_function(np.mean, absorbance_aice, size)
+    absorbance_aice /= np.mean(absorbance_aice)
     results = []
     for j in range(weights.shape[0]):
         yj = np.zeros(weights.shape[1])
@@ -398,7 +419,7 @@ def spectres(new_wavs, spec_wavs, spec_fluxes, spec_errs=None,
              fill=None, supersample_linearly=False, verbose=True):
 
     """
-    Function for resampling spectra (and optionally associated
+    Function for r–esampling spectra (and optionally associated
     uncertainties) onto a new wavelength basis.
     SpectRes function by Adam Carnall, slightly modified by Andrés Megías.
 
@@ -582,7 +603,7 @@ def fill_spectrum(x, y, y_unc=None, threshold=2.):
             num_points = round(dx_i / dx_prev)
             dx_new = dx_i / num_points
             x_ = np.arange(x_prev+dx_prev, x[i]-dx_prev, dx_new)
-            y_ = np.nan * np.ones(len(x_))
+            y_ = np.full(len(x_), np.nan)
             x_new = np.append(x_new, x_)
             y_new = np.append(y_new, y_)
             if y_unc is not None:
@@ -621,10 +642,9 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     """Plot the input spectra."""
     global x_min, x_max, x_lims, y_lims
     global use_logscale, use_microns, invert_yaxis, use_optical_depth
-    global spectra_colors, spectra_colors_old, use_steps_drawstyle
+    global spectra_colors, spectra_colors_old
     plt.clf()
     factor = np.log(10) if use_optical_depth else 1.
-    ds = 'steps-mid' if use_steps_drawstyle else 'default'
     for (i,spectrum_old) in enumerate(spectra_old):
         x = spectrum_old['x'] if not use_microns else 1e4 / spectrum_old['x']
         y = spectrum_old['y'] * factor
@@ -632,7 +652,7 @@ def plot_data(spectra, spectra_old, active_indices, idx,
                  zorder=2.4)
     x = spectra_old[idx]['x'] if not use_microns else 1e4 / spectra_old[idx]['x']
     y = spectra_old[idx]['y'] * factor
-    y_unc = copy.copy(spectra_old[idx]['y_unc'])
+    y_unc = copy.copy(spectra_old[idx]['y-unc'])
     if y_unc is not None:
         y_unc *= factor
     plt.errorbar(x, y, y_unc, color='black', ecolor=[0.7]*3, drawstyle=ds,
@@ -641,21 +661,21 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     if 'y-base' in spectrum:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
         y = spectrum['y-base'] * factor
-        plt.plot(x, y, linestyle='--', lw=0.9*dlw, zorder=2.7,
+        plt.plot(x, y, linestyle='--', lw=0.9*dlw, zorder=3.0,
                  color=colors['baseline'], drawstyle=ds, label='computed baseline')
-        if 'x-ref' in spectrum:
-            x = spectrum['x-ref'] if not use_microns else 1e4 / spectrum['x-ref']
-            y = spectrum['y-ref'] * factor
-            plt.plot(x, y, color=colors['baseline-reference'], drawstyle=ds,
-                     lw=0.8*dlw, alpha=0.8, zorder=2.7, label='baseline reference')
+    if 'y-lines' in spectrum:
+        x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
+        y = spectrum['y-lines'] * factor
+        plt.plot(x, y, linestyle='-', lw=0.9*dlw, zorder=2.7, drawstyle=ds,
+                 color=colors['lines'], label='fitted lines')
     if spectrum['edited']:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
         y = spectrum['y'] * factor
-        y_unc = copy.copy(spectrum['y_unc'])
+        y_unc = copy.copy(spectrum['y-unc'])
         if y_unc is not None:
             y_unc *= factor
         plt.errorbar(x, y, y_unc, color=colors['edited'], ecolor='gray',
-                     drawstyle=ds, lw=0.8*dlw, zorder=2.7,
+                     drawstyle=ds, lw=0.8*dlw, zorder=2.8,
                      label='edited spectrum')
     for i in all_indices:
         if i == idx or i not in active_indices:
@@ -698,23 +718,35 @@ def plot_data(spectra, spectra_old, active_indices, idx,
                     alpha=1., label='windows')
     else:
         plt.plot([], '.', color=colors['selected-points'],
-                 label='baseline reference')
+                 label='reference points')
     ax = plt.gca()
     if use_logscale:
         yy = np.concatenate([spectrum['y'] for spectrum in spectra])
-        mask = yy > 0.
-        linthresh = (100*np.min(np.abs(yy[mask])) if 'abs' not in variable_y
-                     else 500*noise_level)
+        linthresh = (1e3*np.min(np.abs(yy[yy>0])) if 'abs' not in variable_y
+                     else 5*noise_level)
+        linthresh = min(0.3*np.max(yy), linthresh)
+        if 'abs' in variable_y:
+            linthresh = max(0.04*np.max(yy), linthresh)
+        linthresh = 10**(np.floor(np.log(linthresh)))
         plt.yscale('symlog', linthresh=linthresh)
         y1, y2 = plt.ylim()
         log_locator = LogLocator(base=10., subs='auto')
-        minor_ticks = log_locator.tick_values(2*10*linthresh, y2)
-        if y1 < -linthresh:
-            minor_ticks_neg = -log_locator.tick_values(2*10*linthresh, abs(y1))
-            minor_ticks = np.append(minor_ticks, minor_ticks_neg)
-        minor_ticks_neg = -log_locator.tick_values(2*10*linthresh, -y1)
-        minor_ticks = minor_ticks[(minor_ticks > y1) & (minor_ticks < y2)]
+        y1_ = 10**(round(np.log(abs(y1))))
+        y2_ = 10**(round(np.log(y2)))
+        minor_ticks_pos = log_locator.tick_values(linthresh, 1e3*y2_)
+        minor_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y1_)
+        minor_ticks = np.append(minor_ticks_pos, minor_ticks_neg)
         ax.set_yticks(minor_ticks, minor=True)
+        log_locator = LogLocator(base=10.)
+        major_ticks_pos = log_locator.tick_values(linthresh, 1e3*y2_)
+        major_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y1_)
+        major_ticks = np.concatenate([major_ticks_pos, major_ticks_neg, [0.]])
+        major_ticks = np.array(sorted(major_ticks))
+        ax.set_yticks(major_ticks, minor=False)
+        for (tick, label) in zip(ax.get_yticks(), ax.get_yticklabels()):
+            if abs(tick) == linthresh/10:
+                label.set_visible(False)
+        plt.ylim(y1, y2)
     else:
         ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     loc = ('upper left' if 'abs' in variable_y and not invert_yaxis
@@ -763,7 +795,7 @@ def plot_windows(selected_points, use_microns):
 
 def plot_baseline_points(selected_points):
     """Plot the current selected baseline points."""
-    if len(selected_points) > 0:
+    if selected_points is not None and len(selected_points) > 0:
         x, y = np.array(selected_points).T
         x = 1e4 / x if use_microns else x
         plt.plot(x, y, '.', color=colors['selected-points'], zorder=3.)
@@ -773,24 +805,23 @@ def estimate_baseline(spectra, active_indices, selected_points, smooth_size,
     """Estimate a baseline for the input spectra and the given parameters."""
     global x_min, x_max
     windows = get_windows_from_points(selected_points)
-    if not using_manual_baseline_mode:
-        for i in active_indices:
-            spectrum = spectra[i] 
-            x = spectrum['x']
-            y = spectrum['y']
+    for i in active_indices:
+        spectrum = spectra[i] 
+        x = spectrum['x']
+        y = spectrum['y']
+        if not using_manual_baseline_mode:
             y_base = fit_baseline(x, y, smooth_size, windows, interpolation)
-            spectra[i]['y-base'] = y_base
-            spectra[i]['x-ref'] = copy.copy(x)
-            spectra[i]['y-ref'] = copy.copy(y)
-    else:
-        for i in active_indices:
-            spectrum = spectra[i] 
-            x = spectrum['x']
-            y = spectrum['y']
+        else:
             y_base = create_baseline(x, y, selected_points, interpolation)
-            spectra[i]['y-base'] = y_base
-            spectra[i]['x-ref'] = copy.copy(x)
-            spectra[i]['y-ref'] = copy.copy(y)
+        if 'y-base' in spectrum:
+            y_base_prev = copy.copy(spectrum['y-base'])
+            if not using_manual_baseline_mode:
+                x1, x2 = np.min(windows), np.max(windows)
+            else:
+                x1, x2 = np.min(selected_points), np.max(selected_points)
+            mask = (x < x1) | (x > x2)
+            y_base[mask] = y_base_prev[mask]
+        spectra[i]['y-base'] = y_base
 
 def reduce_spectra(spectra, active_indices, variable_y):
     """Reduce the spectra subtracting the pre-computed existing baselines."""
@@ -798,7 +829,7 @@ def reduce_spectra(spectra, active_indices, variable_y):
         spectrum = spectra[i]
         if 'y-base' in spectrum:
             y = spectrum['y']
-            y_unc = spectrum['y_unc']
+            y_unc = spectrum['y-unc']
             y_base = spectrum['y-base']
             if 'abs' in variable_y: 
                 y_red = y - y_base 
@@ -808,11 +839,9 @@ def reduce_spectra(spectra, active_indices, variable_y):
                 y_red_unc = np.abs(y_unc / y_base) if y_unc is not None else None
             spectra[i]['edited'] = True
             spectra[i]['y'] = y_red
-            spectra[i]['y_unc'] = y_red_unc 
+            spectra[i]['y-unc'] = y_red_unc 
             if 'flux' in variable_y:
                 del spectra[i]['y-base']
-                del spectra[i]['x-ref']
-                del spectra[i]['y-ref']
 
 def remove_regions(spectra, active_indices, selected_points):
     """Remove the selected regions of the data."""
@@ -821,9 +850,11 @@ def remove_regions(spectra, active_indices, selected_points):
         spectrum = spectra[i]
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         if 'y-base' in spectrum:
             y_base = spectrum['y-base']
+        if 'y-lines' in spectrum:
+            y_lines = spectrum['y-lines']
         for (x1,x2) in windows:
             is_inferior_edge = x1 <= np.min(x)
             is_superior_edge = x2 >= np.max(x)
@@ -835,6 +866,8 @@ def remove_regions(spectra, active_indices, selected_points):
                     y_unc = y_unc[mask]
                 if 'y-base' in spectrum:
                     y_base = y_base[mask]
+                if 'y-lines' in spectrum:
+                    y_lines = y_lines[mask]
             else:
                 mask = (x >= x1) & (x <= x2)
                 y[mask] = np.nan
@@ -842,24 +875,29 @@ def remove_regions(spectra, active_indices, selected_points):
                     y_unc[mask] = np.nan
                 if 'y-base' in spectrum:
                     y_base[mask] = np.nan
+                if 'y-lines' in spectrum:
+                    y_lines[mask] = np.nan
         spectra[i]['edited'] = True
         spectra[i]['x'] = x
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
         if 'y-base' in spectrum:
             spectra[i]['y-base'] = y_base
+        if 'y-lines' in spectrum:
+            spectra[i]['y-lines'] = y_lines
                 
-def interpolate_regions(spectra, active_indices, selected_points, smooth_size):
+def interpolate_regions(spectra, active_indices, selected_points, smooth_size,
+                        interpolation='spline', exclude_selected_regions=True):
     """Interpolate the selected regions of the data."""
     windows = get_windows_from_points(selected_points)
     for i in active_indices: 
         spectrum = spectra[i]
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
-        windows_ = invert_windows(windows, x)
-        y_interp = fit_baseline(x, y, smooth_size, windows_,
-                                interpolation='pchip')
+        y_unc = spectrum['y-unc']
+        windows_ = (invert_windows(windows, x) if exclude_selected_regions
+                    else None)
+        y_interp = fit_baseline(x, y, smooth_size, windows_, interpolation)
         for (x1, x2) in windows:
             mask = (x >= x1) & (x <= x2)
             y[mask] = y_interp[mask]
@@ -867,7 +905,265 @@ def interpolate_regions(spectra, active_indices, selected_points, smooth_size):
                 y_unc[mask] = 0.
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
+        
+def gaussian(x, mean=0, std=1, height=1, ssf=1):
+    """
+    Apply a Gaussian function to the input array (x), with given height, mean,
+    standard deviation (std) and supersampling factor (ssf).
+    """
+    if ssf == 1:
+        y = height * np.exp(-((x-mean)/std)**2/2)
+    else:
+        dx = np.median(np.diff(x))
+        dx_ = dx / ssf
+        N = round(ssf * len(x))
+        x1_ = x[0] - dx/2 + dx_/2
+        x2_ = x[-1] + dx/2 - dx_/2 
+        x_ = np.linspace(x1_, x2_, N)
+        y_ = height * np.exp(-((x_-mean)/std)**2/2)
+        y = y_.reshape(-1, ssf).mean(axis=1)
+    return y
+
+def fit_gaussian(spectra, active_indices, windows, line_borders,
+                 center=None):
+    """Fit Gaussians to given spectra in the current windows."""
+    global use_microns
+    for j in active_indices:
+        spectrum = spectra[j]
+        x = spectrum['x']
+        y = spectrum['y']
+        mask = np.zeros(len(x), bool)
+        for (x1, x2) in windows:
+            mask |= (x >= x1) & (x <= x2)
+        if line_borders is not None:
+            if line_borders[0][0] > line_borders[1][0]:
+                line_borders = [line_borders[1], line_borders[0]]
+            x1, y1 = line_borders[0]
+            x2, y2 = line_borders[1]
+            mask &= (x >= x1) & (x <= x2)
+        mask &= np.isfinite(y)
+        x_ = x[mask]
+        y_ = y[mask]
+        if line_borders is not None:
+            x1w = np.min(windows)
+            x2w = np.max(windows)
+            x1 = max(x1, x1w)
+            x2 = min(x2, x2w)
+        else:
+            y_b = np.zeros(len(x_))
+            x1, x2 = x_[0], x_[-1]
+            y1, y2 = y_[0], y_[-1]
+        y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
+        width = (x2 - x1) / 2
+        height = np.max(y_)
+        ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
+        if center is None:
+            center = np.mean(x_)
+            guess = [center, width, height]
+            function = lambda x,m,s,h: gaussian(x, m, s, h, ssf)
+        else:
+            guess = [width, height]
+            m = center
+            function = lambda x,s,h: gaussian(x, m, s, h, ssf)
+        fit_params = scipy.optimize.curve_fit(function, x_, y_-y_b, p0=guess)[0]
+        if len(fit_params) == 3:
+            center, width, height = fit_params
+        else:
+            width, height = fit_params
+        if use_microns:
+            width = 1e3 * (1e4 / (center - width/2) - 1e4 / (center + width/2))
+            center = 1e4 / center
+            nd = 3
+            units1 = '(μm)'
+            units2 = '(nm)'
+        else:
+            nd = 1
+            units1 = units2 = '(/cm)'
+        print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
+              f'width {units2}, {width:.1f}; height, {height:.2f}.')
+        mask = (x >= x1) & (x <= x2)
+        y_b = np.interp(x[mask], x_, y_b)
+        y_f = function(x[mask], *fit_params) + y_b
+        y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
+                   else np.full(len(x), np.nan))
+        y_lines[mask] = y_f
+        spectra[j]['y-lines'] = y_lines
+
+def gaussians(x, ssf, *params, centers=None):
+    """
+    Apply several Gaussian functions to the input array, where params should
+    be a tuple with 3 parameters for each function: height, mean and std.
+    """
+    y = np.zeros(len(x))
+    if centers is None:
+        for i in range(0, len(params), 3):
+            mean, std, height = params[i:i+3]
+            y += gaussian(x, mean, std, height, ssf)
+    else:
+        for i in range(0, len(params), 2):
+            std, height = params[i:i+2]
+            mean = centers[i//2]
+            y += gaussian(x, mean, std, height, ssf)
+    return y
+
+def multigaussian_fit(x, y, num_curves=1, ssf=1, max_iters=20, centers=None,
+                      verbose=False, old_results=None):
+    """
+    Make a fit of multiple Gaussians to the input data.
+
+    Parameters
+    ----------
+    x, y : array
+        Input data to fit.
+    num_curves : int, optional
+        Starting number of curves to fit. The default is 1.
+    ssf : int, optional
+        Number of bins in which to supersample the gaussian function.
+        The default is 1.
+    max_iters : int, optional
+        Number of maximum calls of the function. The default is 20.
+    centers : list, optional
+        List of fixed centers for the Gaussians.
+    verbose : bool, optional
+        If True, return informative messages of the fit.
+    old_results : list, optional
+        Internal variable used in the calculations. Do not use.
+
+    Returns
+    -------
+    popt: list
+        List of the parameters of the curves fitted, in groups of 3.
+    window: float
+        Region of x where the fitted curves lie.
+    r2: float
+        Coefficient of determination of the fit.
+    """
+    # First guess of the parameters of the gaussians.
+    x1, x2 = x[0], x[-1]
+    xrange = x2 - x1
+    height = np.mean(y)
+    mean = np.mean(x)
+    std = xrange / 5
+    means = np.random.normal(mean, std, num_curves)
+    guess, bounds_inf, bounds_sup = [], [], []
+    for i in range(len(means)):
+        fix_center = centers is not None and i < len(centers)
+        mean = centers[i] if fix_center else means[i]
+        guess += [mean, std, height]
+        bound_mean_inf = x1 if not fix_center else mean - 0.01*std
+        bound_mean_sup = x2 if not fix_center else mean + 0.01*std
+        bounds_inf += [bound_mean_inf, 0., -40*height]
+        bounds_sup += [bound_mean_sup, 5*xrange, 40*height]
+    bounds = (bounds_inf, bounds_sup)
+    # Fit.
+    multigaussian_ = lambda x,*params: gaussians(x, ssf, *params) 
+    popt, pcov = scipy.optimize.curve_fit(multigaussian_, x, y, p0=guess,
+                                          bounds=bounds)
+    # Coefficient of determination.    
+    res = y - multigaussian_(x, *popt)
+    ss_res = np.sum(res**2)
+    ss_tot = np.sum((y - np.mean(y))**2)
+    r2 = 1 - (ss_res / ss_tot)
+    if verbose:
+        print('num_curves, r2, max_iters: ', num_curves, r2, max_iters)
+    # Window of the fit.
+    means = popt[1::3]
+    sigmas = abs(popt[2::3])
+    i1 = means.argmin()
+    i2 = means.argmax()
+    window = [means[i1] - 4*sigmas[i1], means[i2] + 4*sigmas[i2]]
+    # Condition for finishing or adding another gaussian curve.
+    if old_results and old_results[-1] > 0.5 and (r2 - old_results[-1]) < 0.05:
+        if verbose:
+            print('Returning to previous fit.')
+        if old_results[-1] > 0.9:
+            if verbose:
+                print('Finished.')
+            return old_results
+        else:
+            print('Error: Fitting failed.')
+            return [], None, None
+    if r2 > 0.9 or num_curves > 5 or max_iters == 0:
+        if r2 > 0.9:
+            if verbose:
+                print('Finished.')
+            return popt, window, r2
+        else:
+            print('Error: Fitting failed.')
+            return [], None, None
+    else: 
+        num_curves += 1
+        old_results = (copy.copy(popt), copy.copy(window), copy.copy(r2))
+        return multigaussian_fit(x, y, num_curves, ssf, max_iters-1, centers,
+                                 verbose, old_results)
+        
+def fit_gaussians(spectra, active_indices, windows, line_borders, centers=None):
+    """Fit Gaussians to given spectra in the current windows."""
+    global use_microns
+    for j in active_indices:
+        spectrum = spectra[j]
+        x = spectrum['x']
+        y = spectrum['y']
+        mask = np.zeros(len(x), bool)
+        for (x1, x2) in windows:
+            mask |= (x >= x1) & (x <= x2)
+        if line_borders is not None:
+            if line_borders[0][0] > line_borders[1][0]:
+                line_borders = [line_borders[1], line_borders[0]]
+            x1, y1 = line_borders[0]
+            x2, y2 = line_borders[1]
+            mask &= (x >= x1) & (x <= x2)
+        mask &= np.isfinite(y)
+        x_ = x[mask]
+        y_ = y[mask]
+        if line_borders is not None:
+            x1w = np.min(windows)
+            x2w = np.max(windows)
+            x1 = max(x1, x1w)
+            x2 = min(x2, x2w)
+        else:
+            y_b = np.zeros(len(x_))
+            x1, x2 = x_[0], x_[-1]
+            y1, y2 = y_[0], y_[-1]
+        y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
+        ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
+        function = lambda x,*args: gaussians(x, ssf, *args)
+        fit_params = multigaussian_fit(x_, y_, ssf=ssf, centers=centers,
+                                       verbose=False)[0]
+        for i in range(0, len(fit_params), 3):
+            center, width, height = fit_params[i:i+3]
+            if use_microns:
+                width = 1e3 * (1e4 / (center - width/2) - 1e4 / (center + width/2))
+                center = 1e4 / center
+                nd = 3
+                units1 = '(μm)'
+                units2 = '(nm)'
+            else:
+                nd = 1
+                units1 = units2 = '(/cm)'
+            print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
+                  f'width {units2}, {width:.1f}; height, {height:.2f}.')
+        mask = (x >= x1) & (x <= x2)
+        y_b = np.interp(x[mask], x_, y_b)
+        y_f = function(x[mask], *fit_params) + y_b
+        y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
+                   else np.full(len(x), np.nan))
+        y_lines[mask] = y_f
+        spectra[j]['y-lines'] = y_lines
+        
+def remove_fitted_lines(spectra, active_indices, windows):
+    """Remove previously fitted lines in current windows."""
+    for i in active_indices:
+        spectrum = spectra[i]
+        if 'y-lines' in spectrum:
+            x = spectrum['x']
+            y_lines = spectrum['y-lines']
+            mask = np.zeros(len(x), bool)
+            for (x1, x2) in windows:
+                mask |= (x >= x1) & (x <= x2)
+            y_lines[mask] = np.nan
+            spectra[i]['y-lines'] = y_lines
 
 def smooth_spectra(spectra, active_indices, selected_points, smooth_size,
                  function=np.nanmean):
@@ -880,7 +1176,7 @@ def smooth_spectra(spectra, active_indices, selected_points, smooth_size,
         spectrum = spectra[i] 
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         for (x1, x2) in windows:
             mask1 = (x >= x1 - smooth_size) & (x <= x2 + smooth_size)
             x_ = x[mask1]
@@ -891,9 +1187,10 @@ def smooth_spectra(spectra, active_indices, selected_points, smooth_size,
                 y_unc[mask] = y_unc[mask] / np.sqrt(smooth_size)
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
         
-def multiply_spectra(spectra, active_indices, selected_points, factor):
+def multiply_spectra(spectra, active_indices, selected_points, factor,
+                     multiply_lines=False):
     """Multiply the data in the selected regions with the input factor.""" 
     if selected_points == []:
         global x_min, x_max
@@ -902,16 +1199,18 @@ def multiply_spectra(spectra, active_indices, selected_points, factor):
     for i in active_indices:
         spectrum = spectra[i] 
         x = spectrum['x']
-        y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y = spectrum['y'] if not multiply_lines else spectrum['y-lines']
+        y_unc = spectrum['y-unc']
         for (x1,x2) in windows:
             mask = (x >= x1) & (x <= x2)
             y[mask] = factor * y[mask]
             if y_unc is not None:
                 y_unc[mask] = factor * y_unc[mask] 
-        spectra[i]['edited'] = True
-        spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        if not multiply_lines:
+            spectra[i]['edited'] = True
+        yvar = 'y' if not multiply_lines else 'y-lines'
+        spectra[i][yvar] = y
+        spectra[i]['y-unc'] = y_unc
         
 def set_zero(spectra, active_indices, selected_points, only_negatives=False):
     """Set selected region of the data to zero."""
@@ -927,7 +1226,7 @@ def set_zero(spectra, active_indices, selected_points, only_negatives=False):
         spectrum = spectra[i]
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         for (x1, x2) in windows:
             mask = (x >= x1) & (x <= x2)
             if only_negatives:
@@ -937,7 +1236,7 @@ def set_zero(spectra, active_indices, selected_points, only_negatives=False):
                 y_unc[mask] = 0.
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
         
 def set_one(spectra, active_indices, selected_points, only_gtr1=False):
     """Set selected region of the data to one."""
@@ -953,7 +1252,7 @@ def set_one(spectra, active_indices, selected_points, only_gtr1=False):
         spectrum = spectra[i]
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         for (x1, x2) in windows:
             mask = (x >= x1) & (x <= x2)
             if only_gtr1:
@@ -963,7 +1262,7 @@ def set_one(spectra, active_indices, selected_points, only_gtr1=False):
                 y_unc[mask] = 0.
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
 
 def add_noise(spectra, active_indices, selected_points, noise_level):
     """Add noise to the selected regions.""" 
@@ -975,7 +1274,7 @@ def add_noise(spectra, active_indices, selected_points, noise_level):
         spectrum = spectra[i] 
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         for (x1, x2) in windows:
             mask = (x >= x1) & (x <= x2)
             noise = np.random.normal(0., scale=noise_level, size=sum(mask))
@@ -985,7 +1284,7 @@ def add_noise(spectra, active_indices, selected_points, noise_level):
                 y_unc[mask] += noise_level
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
-        spectra[i]['y_unc'] = y_unc
+        spectra[i]['y-unc'] = y_unc
 
 def add_offset(spectra, active_indices, selected_points, offset):
     """Add offset to selected spectra.""" 
@@ -1016,7 +1315,7 @@ def do_resampling(spectra, active_indices, selected_points, x_ref, kind='simple'
         spectrum = spectra[i] 
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         x_new = np.array([])
         y_new = np.array([])
         y_unc_new = np.array([]) if y_unc is not None else None
@@ -1056,48 +1355,75 @@ def do_resampling(spectra, active_indices, selected_points, x_ref, kind='simple'
         spectra[i]['edited'] = True
         spectra[i]['x'] = x_new
         spectra[i]['y'] = y_new
-        spectra[i]['y_unc'] = y_unc_new
+        spectra[i]['y-unc'] = y_unc_new
         
-def compute_absorbance(spectra, active_indices):
+def compute_absorbance(spectra):
     """Convert the current spectra from transmittance to absorbance."""
     with np.errstate(invalid='ignore'):
-        for i in active_indices:
-            spectrum = spectra[i]
+        for (i, spectrum) in enumerate(spectra):
             y = spectrum['y']
-            y_unc = spectrum['y_unc']
+            y_unc = spectrum['y-unc']
             y_new = -np.log10(y)
             y_unc_new = (np.abs(y_unc / y) / np.log(10)
                          if y_unc is not None else None)
             spectra[i]['edited'] = True
             spectra[i]['y'] = y_new
-            spectra[i]['y_unc'] = y_unc_new
+            spectra[i]['y-unc'] = y_unc_new
             if 'y-base' in spectrum:
                 del spectra[i]['y-base']
-            if 'x-ref' in spectrum:
-                del spectra[i]['x-ref']
-                del spectra[i]['y-ref']
                 
-def integrate_spectrum(spectrum, selected_points, factor=1.):
-    """Integrate the spectrum."""
+def compute_transmittance(spectra):
+    """Convert the current spectra from absorbance to transmittance."""
+    with np.errstate(invalid='ignore'):
+        for (i, spectrum) in enumerate(spectra):
+            y = spectrum['y']
+            y_unc = spectrum['y-unc']
+            y_new = 10**(-y)
+            y_unc_new = (y_new * np.log(10) * y_unc
+                         if y_unc is not None else None)
+            spectra[i]['edited'] = True
+            spectra[i]['y'] = y_new
+            spectra[i]['y-unc'] = y_unc_new
+            if 'y-base' in spectrum:
+                del spectra[i]['y-base']
+                
+def integrate_spectrum(spectrum, selected_points, factor=1., borders=None,
+                       integrate_fitted_lines=False):
+    """Integrate the spectrum in the current region."""
     if selected_points == []:
         print('Error: No points selected.')
         return
     windows = get_windows_from_points(selected_points)
     x = spectrum['x']
-    y = spectrum['y']
-    np_isfinite_y = np.isfinite(y)
+    y = (spectrum['y-lines'] if integrate_fitted_lines and 'y-lines' in spectrum
+         else spectrum['y'])
+    if borders is None:
+        x1 = np.min(windows)
+        x2 = np.max(windows)
+    else:
+        if borders[0][0] > borders[1][0]:
+            borders = [borders[1], borders[0]]
+        x1, y1 = borders[0]
+        x2, y2 = borders[1]
+    mask = (x >= x1) & (x <= x2) & np.isfinite(y)
+    x_ = x[mask]
+    y_ = y[mask]
+    if borders is None:
+        y1, y2 = y_[0], y_[-1]
+    y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
+    y_ -= y_b
     area = 0.
-    for (x1,x2) in windows:
-        mask = (x >= x1) & (x <= x2) & np_isfinite_y
-        area += np.trapezoid(y[mask], x[mask])
+    for (x1, x2) in windows:
+        mask = (x_ >= x1) & (x_ <= x2)
+        area += np.trapezoid(y_[mask], x_[mask])
     area /= factor
     return area
 
-def copy_spectrum_part(spectrum, windows):
+def copy_spectrum_part(spectrum, windows, copy_lines=False):
     """Make a copy of the spectrum in the windows defined by the input points."""
     x = spectrum['x']
-    y = spectrum['y']
-    y_unc = spectrum['y_unc']
+    y = spectrum['y'] if not copy_lines else spectrum['y-lines']
+    y_unc = spectrum['y-unc']
     copied_data = []
     for x1x2 in windows:
         x1, x2 = min(x1x2), max(x1x2)
@@ -1105,14 +1431,14 @@ def copy_spectrum_part(spectrum, windows):
         xi = x[mask]
         yi = y[mask]
         yi_unc = y_unc[mask] if y_unc is not None else None
-        copied_data += [{'x': xi, 'y': yi, 'y_unc': yi_unc}]
+        copied_data += [{'x': xi, 'y': yi, 'y-unc': yi_unc}]
     return copied_data
 
 def paste_spectrum_part(spectrum, copied_data):
     """Replace the input spectrum by the previously copied data in such regions."""
     x = spectrum['x']
     y = spectrum['y']
-    y_unc = spectrum['y_unc']
+    y_unc = spectrum['y-unc']
     if y_unc is None:
         y_unc = np.zeros(len(x), float)
     mask = np.zeros(len(x), bool)
@@ -1121,7 +1447,7 @@ def paste_spectrum_part(spectrum, copied_data):
     for copied_part in copied_data:
         xi = copied_part['x']
         yi = copied_part['y']
-        yi_unc = copied_part['y_unc']
+        yi_unc = copied_part['y-unc']
         if yi_unc is None:
             yi_unc = np.zeros(len(xi), float)
         x1, x2 = xi.min(), xi.max()
@@ -1136,7 +1462,7 @@ def paste_spectrum_part(spectrum, copied_data):
     x_new, inds = np.unique(x_new, return_index=True)
     y_new = y_new[inds]
     y_new_unc = y_new_unc[inds] if np.sum(y_new_unc) != 0 else None
-    new_spectrum = {'x': x_new, 'y': y_new, 'y_unc': y_new_unc, 'edited': True}
+    new_spectrum = {'x': x_new, 'y': y_new, 'y-unc': y_new_unc, 'edited': True}
     return new_spectrum
 
 def sum_spectra(spectra, x_new=None):
@@ -1146,7 +1472,7 @@ def sum_spectra(spectra, x_new=None):
     y_new_var = np.zeros(num_points, float)
     for (i, spectrum) in enumerate(spectra):
         yi = spectrum['y']
-        yi_unc = spectrum['y_unc']
+        yi_unc = spectrum['y-unc']
         if yi_unc is None:
             yi_unc = np.zeros(len(yi), float)
         if x_new is None:
@@ -1159,31 +1485,112 @@ def sum_spectra(spectra, x_new=None):
             if np.sum(yi_unc) != 0.:
                 y_new_var +=  yi_unc_**2
     y_new_unc = np.sqrt(y_new_var) if np.sum(y_new_var) != 0. else None
-    new_spectrum = {'x': x_new, 'y': y_new, 'y_unc': y_new_unc, 'edited': True}
+    if x_new is None:
+        x_new = spectra[0]['x']
+    new_spectrum = {'x': x_new, 'y': y_new, 'y-unc': y_new_unc, 'edited': True}
     return new_spectrum
         
 def merge_spectra(spectra):
     """Perform the union of all the input spectra into a single one."""
     x_new = np.array([], float)
     y_new = np.array([], float)
-    y_unc_new = np.array([], float)
+    are_uncs = any([spectrum['y-unc'] is not None for spectrum in spectra])
+    are_baselines = any(['y-base' in spectrum for spectrum in spectra])
+    if are_uncs:
+        y_unc_new = np.array([], float)
+    if are_baselines:
+        y_base_new = np.array([], float)
+        x_ref_new = np.array([], float)
+        y_ref_new = np.array([], float)
     for spectrum in spectra:
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
-        if y_unc is None:
-            y_unc = np.zeros(len(x), float)
         mask = np.isfinite(y)
         x_new = np.append(x_new, x[mask])
         y_new = np.append(y_new, y[mask])
-        y_unc_new = np.append(y_unc_new, y_unc[mask])
+        if are_uncs:
+            y_unc = spectrum['y-unc']
+            if y_unc is None:
+                y_unc = np.zeros(len(x), float)
+            y_unc_new = np.append(y_unc_new, y_unc[mask])
+        if are_baselines:
+            y_base = (spectrum['y-base'] if 'y-base' in spectrum
+                      else np.full(len(x), np.nan))
+            y_base_new = np.append(y_base_new, y_base[mask])
     x_new, inds = np.unique(x_new, return_index=True)
     y_new = y_new[inds]
-    y_unc_new = y_unc_new[inds] if np.nansum(y_unc_new) > 0. else None
+    y_unc_new = (y_unc_new[inds] if are_uncs and np.nansum(y_unc_new) > 0.
+                 else None)
+    if are_baselines:
+        x_new_ = copy.copy(x_new)
     x_new, y_new, y_unc_new = fill_spectrum(x_new, y_new, y_unc_new)
-    new_spectrum = {'x': x_new, 'y': y_new, 'y_unc': y_unc_new, 'edited': True}
+    new_spectrum = {'x': x_new, 'y': y_new, 'y-unc': y_unc_new, 'edited': True}
+    if are_baselines:
+        y_base_new = y_base_new[inds]
+        y_base_new = np.interp(x_new, x_new_, y_base_new)
+        x_ref_new, inds = np.unique(x_ref_new, return_index=True)
+        y_ref_new = y_ref_new[inds]
+        new_spectrum['y-base'] = y_base_new
     return new_spectrum
-        
+
+def load_external_baseline(spectra, active_indices, selected_points,
+                           filepath, column_inds):
+    """Load file containing baseline into current spectra."""
+    data = np.loadtxt(filepath)
+    num_cols = data.shape[1]
+    if num_cols < 2:
+        print('Error: Data file should contain at least 2 columns.')
+    if column_inds == 'auto':
+        if num_cols == 2:
+            column_inds = [1, 2]
+        elif num_cols == 3:
+            column_inds = [1, 2, 3]
+        else:
+            column_inds = ([1, 2, 4] if 'flux' in variable_y
+                           else [1, 2, 3])
+    column_inds = [i-1 for i in column_inds]
+    i_xr = column_inds[0]
+    i_yb = column_inds[-1]
+    x_ref = data[:,i_xr]
+    y_base = data[:,i_yb]
+    if np.median(x_ref) < 200:
+        x_ref = 1e4 / x_ref
+    x_base, inds = np.unique(x_ref, return_index=True)
+    y_base = y_base[inds]
+    for i in active_indices:
+        spectrum = spectra[i]
+        x = spectrum['x']
+        if 'y-base' in spectrum:
+            y_base_prev = copy.copy(spectrum['y-base'])
+            if selected_points != []:
+                if not using_manual_baseline_mode:
+                    windows = get_windows_from_points(selected_points)
+                    x1, x2 = np.min(windows), np.max(windows)
+                else:
+                    x1, x2 = np.min(selected_points), np.max(selected_points)
+            else:
+                x1, x2 = x_ref[0], x_ref[-1]
+            mask = (x < x1) | (x > x2)
+            y_base[mask] = y_base_prev[mask]
+        y_base_ = np.interp(x, x_base, y_base)
+        spectra[i]['y-base'] = y_base_
+
+def get_windows_text(windows):
+    """Convert the input window points to text."""   
+    text_list = []
+    for x1x2 in windows:
+        x1, x2 = min(x1x2), max(x1x2)
+        text_list += ['({:.2f}, {:.2f})'.format(x2, x1)]
+    text = str(text_list)
+    return text
+
+def get_points_text(selected_points):
+    """Convert the input selected points to text."""
+    points_text = []
+    for (x,y) in selected_points:
+        points_text += ['({:.2f}, {:.4g})'.format(x, y)]
+    return points_text
+         
 def save_files(spectra, active_indices, spectra_names, original_filemames,
                save_only_baseline=False):
     """Save processed spectra."""
@@ -1222,6 +1629,7 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         else:
             columns = spectra_names_active_indices.tolist()
             columns = ['.'.join(column.split('.')[:-1]) for column in columns]
+            columns = [f'{variable_y} {column}' for column in columns]
         for (i, column) in enumerate(columns):
             column = (column.replace('transmittance', 'transm.')
                       .replace('absorbance', 'abs.')
@@ -1234,8 +1642,7 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         if not filename.endswith('.csv'):
             filename += '.csv'
         xx = [spectrum['x'] for spectrum in selected_spectra]
-        idx = np.argmax([len(x) for x in xx])
-        x = xx[idx]
+        x = np.unique(xx)
         if use_microns:
             x = 1e4/x
         new_df = pd.DataFrame({variable_x_: x})
@@ -1262,7 +1669,7 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         spectrum = spectra[idx]
         x = spectrum['x']
         y = spectrum['y']
-        y_unc = spectrum['y_unc']
+        y_unc = spectrum['y-unc']
         variable_x_ = variable_x_.replace(' ', '_')
         variable_y_ = variable_y.replace(' ', '_')
         if variable_y == 'absorbance' and use_optical_depth:
@@ -1280,7 +1687,15 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         nd = max([len(xi.split('.')[-1]) if '.' in xi else 0
                   for xi in x.astype(str)])
         fmt = f'%.{nd}f %.3e' if y_unc is None else f'%.{nd}f %.3e %.3e'
-        np.savetxt(filename, data, fmt=fmt, header=f" {variable_x_} {variable_y_}")
+        header = f' {variable_x_} {variable_y_}'
+        if y_unc is  not None:
+            if '(' not in variable_y:
+                header += f' {variable_y_}_unc.'
+            else:
+                variable, units = variable_y_.split('(')
+                units = units[:-1]
+                header += f' {variable}_unc._({units})'
+        np.savetxt(filename, data, fmt=fmt, header=header)
     saved_var = 'spectrum' if not save_only_baseline else 'baseline'
     if num_spectra > 1:
         saved_var = (saved_var.replace('spectrum', 'spectra')
@@ -1373,9 +1788,22 @@ def click2(event):
                 or x is None or x is not None and not np.isfinite(x)):
             return 
         global spectra, spectra_old, selected_points, idx
-        global using_manual_baseline_mode
+        global using_manual_baseline_mode, waiting_for_click
         global action_log, jlog
-        if using_manual_baseline_mode:
+        if waiting_for_click:
+            if button in ('left', '1'):
+                global click_action_options
+                clicked_borders = click_action_options['clicked_borders']
+                y = event.ydata
+                clicked_borders += [[x, y]]
+                click_action_options['clicked_borders'] = clicked_borders
+                plot_baseline_points(clicked_borders)
+                if len(clicked_borders) == 2:
+                    press_key(SimpleNamespace(key=click_action_options['key']))
+            elif button in ('right', '3'):
+                waiting_for_click = False
+                print('Operation cancelled.')
+        elif using_manual_baseline_mode:
             if button in ('left', '1'):
                 y = event.ydata
                 selected_points += [[x, y]]
@@ -1424,19 +1852,16 @@ def click2(event):
                 plot_data(spectra, spectra_old, active_indices, idx,
                           using_manual_baseline_mode)
                 plot_windows(selected_points, use_microns)
-        if not using_manual_baseline_mode:
-            windows = []
-            for x1x2 in get_windows_from_points(selected_points):
-                x1, x2 = min(x1x2), max(x1x2)
-                windows += [f'({x2:.2f}, {x1:.2f})']
-            action_info = {'action': 'modify windows', 'windows': windows}
-        else:
-            points = []
-            for (x,y) in selected_points:
-                points += [f'({x:.2f}, {y:.4g})']
-            action_info = {'action': 'modify points', 'points': points}
-        action_log = action_log[:jlog+1] + [copy.deepcopy(action_info)]
-        jlog += 1
+        if not waiting_for_click:
+            if not using_manual_baseline_mode:
+                windows = get_windows_from_points(selected_points)
+                windows_text = get_windows_text(windows)
+                action_info = {'action': 'modify windows', 'windows': windows_text}
+            else:
+                points_text = get_points_text(selected_points)
+                action_info = {'action': 'modify points', 'points': points_text}
+            action_log = action_log[:jlog+1] + [copy.deepcopy(action_info)]
+            jlog += 1
         plt.draw()    
 
 def press_key(event):
@@ -1450,7 +1875,8 @@ def press_key(event):
     global selected_points, x_lims, y_lims, old_x_lims, rel_margin_y
     global use_logscale, use_optical_depth, use_microns, invert_yaxis
     global in_macro, k, macro_actions, copied_data, x_min, x_max
-    global spectra_colors, spectra_colors_old, use_steps_drawstyle
+    global spectra_colors, spectra_colors_old
+    global waiting_for_click, click_action_options
     action_info = None
     if in_macro and event.key in ('enter', ' ', 'escape'):
         if event.key == 'escape':
@@ -1512,6 +1938,8 @@ def press_key(event):
                 else:
                     print(f'Unknown action: {action}.')
             k += 1
+    elif waiting_for_click and event.key == 'escape':
+        waiting_for_click = False
     elif event.key == 'escape':
         plt.close(1)
         return
@@ -1551,7 +1979,7 @@ def press_key(event):
         else:
             y_lims = calculate_ylims([spectra[idx]], x_lims_, 1., 99., rel_margin_y)
         if y_lims == prev_y_lims:
-            y_lims = calculate_ylims(spectra, x_lims_, 0., 100., rel_margin_y)
+            y_lims = calculate_robust_ylims(spectra, x_lims_, 0., 100., rel_margin_y)
     elif event.key == 'ctrl+-':
         if 'flux' not in variable_y:
             invert_yaxis = not invert_yaxis
@@ -1600,10 +2028,7 @@ def press_key(event):
             x = np.unique(xx)
             windows = np.array(invert_windows(windows, x))
             selected_points = list(windows.flatten())
-            windows_text = []
-            for x1x2 in windows:
-                x1, x2 = min(x1x2), max(x1x2)
-                windows_text += ['({:.2f}, {:.2f})'.format(x2, x1)]
+            windows_text = get_windows_text(windows)
             action_info = {'action': 'modify windows', 'windows': windows_text}
     elif event.key == 'backspace':
         if len(selected_points) > 1 and not using_manual_baseline_mode:
@@ -1624,7 +2049,7 @@ def press_key(event):
                 action_info['current selected spectrum'] = spectra_names[idx]
     elif event.key in ('w', 'W', 'ctrl+w'):
         if event.key == 'ctrl+w':
-            text = custom_input('Write new window (/cm): ', 'Add window')
+            text = custom_input('- Write new window (/cm): ', 'Add window')
             text = (text.replace('(','').replace(')','')
                     .replace('[','').replace(']','').replace(', ',','))
             x1, x2 = text.split(',')
@@ -1635,7 +2060,7 @@ def press_key(event):
             if not in_macro or in_macro and windows == 'auto':
                 global original_folder
                 text = (spectra_names[idx] if event.key == 'w'
-                        else custom_input('Write species to mask: '), 'Add windows')
+                        else custom_input('- Write species to mask: '), 'Add windows')
                 species_list = parse_composition(text, original_folder)
                 x = spectra[idx]['x']
                 if len(selected_points) == 0:
@@ -1650,11 +2075,9 @@ def press_key(event):
                             mask |= (x >= x1) & (x <= x2)
                 windows = get_windows_from_mask(~mask, x)
                 selected_points = list(np.array(windows).flatten()[::-1])
-        windows_text = []
-        for x1x2 in get_windows_from_points(selected_points):
-            x1, x2 = min(x1x2), max(x1x2)
-            windows_text += ['({:.2f}, {:.2f})'.format(x2, x1)]
         print('Modified windows.')
+        windows = get_windows_from_points(selected_points)
+        windows_text = get_windows_text(windows)
         action_info = {'action': 'modify windows', 'windows': windows_text}
     elif event.key in ('s', 'S', 'ctrl+s', 'ctrl+S'):
         if not in_macro:
@@ -1673,13 +2096,14 @@ def press_key(event):
             print(f'Smoothed regions in current windows with smoothing factor {factor}.')
             action_name = 'smooth (median)' if 'ctrl' in event.key else 'smooth'
             action_info = {'action': action_name, 'smoothing factor': factor}
-    elif event.key in ('x', 'X'):
+    elif event.key in ('x', 'X', 'ctrl+x', 'ctrl+X',
+                       'alt+x', 'alt+X', 'cmd+x', 'cmd+X'):
         if selected_points == []:
             print('Error: No points selected.')
         else:
             if not in_macro:
                 factor = copy.copy(interp_smooth_size)
-            if event.key == 'X':
+            if 'X' in event.key:
                 text = custom_input('- Enter smoothing factor for interpolation: ',
                                     'Interpolate')
                 try:
@@ -1689,7 +2113,11 @@ def press_key(event):
             if factor < 1 or factor % 1 != 0:
                 print('Error: Smoothing factor should be an integer greater than 0.')
             else:
-                interpolate_regions(spectra, active_indices, selected_points, factor)
+                interpolation = 'pchip' if 'ctrl' in event.key else 'spline'
+                exclude_selected_regions = (False if 'alt' in event.key
+                                            or 'cmd' in event.key else True)
+                interpolate_regions(spectra, active_indices, selected_points,
+                                    factor, interpolation, exclude_selected_regions)
                 print('Interpolated regions in current windows with'
                       f' smoothing factor {factor}.')
                 action_info = {'action': 'interpolate',
@@ -1705,12 +2133,12 @@ def press_key(event):
                 factor = 0.
         if factor != 0.:
             add_noise(spectra, active_indices, selected_points, factor)
-            print(f'Added Gaussian noise with a value of {factor:.3e}.')
+            print(f'Added normal noise with a standard deviation of {factor:.3e}.')
             action_info = {'action': 'add noise', 'noise level': f'{factor:.3e}'}
-    elif event.key in ('b', 'B', 'ctrl+b', 'ctrl+B', 'cmd+b', 'cmd+B'):
+    elif event.key in ('b', 'B', 'ctrl+b', 'ctrl+B'):
         if not in_macro:
             factor = copy.copy(baseline_smooth_size)
-        if event.key in ('B', 'ctrl+B', 'cmd+B') and not using_manual_baseline_mode:
+        if event.key in ('B', 'ctrl+B') and not using_manual_baseline_mode:
             text = custom_input('- Enter smoothing factor for baseline: ',
                                 'Baseline (B)')
             try:
@@ -1720,7 +2148,7 @@ def press_key(event):
         if factor < 1 or factor % 1 != 0:
             print('Error: Smoothing factor should be an integer greater than 0.')
         else:
-            interpolation = 'pchip' if 'c' in event.key else 'spline'
+            interpolation = 'pchip' if 'ctrl' in event.key else 'spline'
             estimate_baseline(spectra, active_indices, selected_points, factor, 
                               using_manual_baseline_mode, interpolation)
             suffix = '' if len(active_indices) == 1 else 's'
@@ -1731,7 +2159,7 @@ def press_key(event):
                 print(f'Computed baseline{suffix} from reference points.')
                 factor = 1
             action_info = {'action': 'estimate baseline', 'smoothing factor': factor}
-    elif event.key == 'r':
+    elif event.key == 'r' or 'flux' in variable_y and event.key == 't':
         baselines_in_spectra = ['y-base' in spectrum for spectrum in spectra]
         if ('abs' not in variable_y
                 and (not all(baselines_in_spectra)
@@ -1746,7 +2174,9 @@ def press_key(event):
         else:
             reduce_spectra(spectra, active_indices, variable_y)
             suffix = 'um' if len(active_indices) == 1 else 'a'
-            print(f'Reduced selected spectr{suffix}.')
+            extra_msg = ('by converting to transmittance' if 'flux' in variable_y
+                         else 'by subtracting the baseline')
+            print(f'Reduced selected spectr{suffix} {extra_msg}.')
             if 'flux' in variable_y:
                 variable_y = 'transmittance'
                 spectra_old = copy.deepcopy(spectra)
@@ -1767,10 +2197,8 @@ def press_key(event):
             else:
                 print('Region in current windows set to 0.')
         else:
-            points = []
-            for (x,y) in selected_points:
-                points += ['({:.2f}, {:.4g})'.format(x, y)]
-            action_info = {'action': 'modify points', 'points': points}
+            points_text = get_points_text(selected_points)
+            action_info = {'action': 'modify points', 'points': points_text}
             for x in np.linspace(x_min, x_max, 40):
                 selected_points += [[x, 0.]] 
     elif event.key in ('1', '!'):
@@ -1788,10 +2216,8 @@ def press_key(event):
                 else:
                     print('Region in current windows set to 1.')
             else:
-                points = []
-                for (x,y) in selected_points:
-                    points += ['({:.2f}, {:.4g})'.format(x, y)]
-                action_info = {'action': 'modify points', 'points': points}
+                points_text = get_points_text(selected_points)
+                action_info = {'action': 'modify points', 'points': points_text}
                 for x in np.linspace(x_min, x_max, 40):
                     selected_points += [[x, 1.]] 
     elif event.key in ('o', 'O'):
@@ -1802,7 +2228,7 @@ def press_key(event):
             except:
                 offset = None
         if event.key == 'O':
-            offset = 'baseline'
+            offset = 'baseline' if selected_points != [] else None
         if offset is not None:
             add_offset(spectra, active_indices, selected_points, offset)
             if not using_manual_baseline_mode or selected_points == []:
@@ -1810,41 +2236,115 @@ def press_key(event):
                 action_info = {'action': 'add offset', 'offset': offset}
             else:
                 print('Added baseline offset to selected spectra.')
-                points = []
-                for (x,y) in selected_points:
-                    points += ['({:.2f}, {:.4g})'.format(x, y)]
+                points_text = get_points_text(selected_points)
                 action_info = {'action': 'add baseline offset',
-                               'points': points}
-    elif event.key in ('i', 'I'):
-        if event.key == 'i':
-            factor = 1.
-            area_variable = 'area'
-            area_units = '/cm'
+                               'points': points_text}
+    elif event.key in ('g', 'G', 'ctrl+g', 'ctrl+G'):
+        if 'abs' not in variable_y:
+            print('Error: Cannot fit a Gaussian in flux mode.')
+        elif len(selected_points) < 2:
+            print('Error: You must select a window where to fit a Gaussian.')
         else:
-            text = custom_input('- Introduce the band strength (cm): ',
-                                'Integrate (I)')
-            try:
-               factor =  float(text) / np.log(10)
-            except:
-                factor = None
-            area_variable = 'column density'
-            area_units = '/cm2'
-        if factor is not None:
-            area = integrate_spectrum(spectra[idx], selected_points, factor)
-            print('Integrated {}: {:.3e} {}'.format(area_variable, area, area_units))
-    elif event.key in ('f', 'F'):
-        if event.key == 'F' and 'abs' not in variable_y:
+            windows = get_windows_from_points(selected_points)
+            if not waiting_for_click:
+                if 'G' in event.key:
+                    text = custom_input('- Write the center(s) of the line(s): ',
+                                        'Gaussian fit (G)').replace(' ', '')
+                    if text == '':
+                        return
+                    centers = [float(x) for x in text.split(',')]
+                else:
+                    centers = None
+                if 'ctrl' in event.key:
+                    fit_function = fit_gaussians
+                else:
+                    fit_function = fit_gaussian
+                    if centers is not None:
+                        centers = centers[0]
+                print('Click two reference points for the line borders'
+                      ' (press Enter to skip).')
+                click_action_options = {'key': event.key, 'centers': centers,
+                               'fit_function': fit_function, 'clicked_borders': []}
+                waiting_for_click = True
+            else:
+                clicked_borders = click_action_options['clicked_borders']
+                if clicked_borders is None or len(clicked_borders) == 2:
+                    waiting_for_click = False
+                    centers = click_action_options['centers']
+                    fit_function = click_action_options['fit_function']
+                    fit_function(spectra, active_indices, windows, clicked_borders,
+                                 centers)
+                    windows_text = get_windows_text(windows)
+                    action_info = {'action': 'fit line', 'windows': windows_text}
+                    if clicked_borders is not None:
+                        x1, y1 = clicked_borders[0]
+                        x2, y2 = clicked_borders[1]
+                        line_borders_text = (f'({x1:.3f}), ({y1:.3f});'
+                                             ' ({x2:.3f}), ({y2:.3f})')
+                        action_info['line borders'] = line_borders_text
+                    if centers is not None:
+                        action_info['centers'] = centers
+    elif waiting_for_click and event.key == 'enter':
+        click_action_options['clicked_borders'] = None
+        press_key(SimpleNamespace(key=click_action_options['key']))
+    elif event.key == 'alt+tab':
+        windows = get_windows_from_points(selected_points)
+        remove_fitted_lines(spectra, active_indices, windows)
+        windows_text = get_windows_text(windows)
+        action_info = {'action': 'remove fitted lines', 'windows': windows_text}
+    elif event.key in ('i', 'I', 'ctrl+i', 'ctrl+I'):
+        if len(selected_points) < 2:
+            print('Error: You must select a region to integrate.')
+            return
+        if not waiting_for_click:
+            if 'i' in event.key:
+                factor = 1.
+                area_variable = 'area'
+                area_units = '/cm'
+            elif 'I' in event.key:
+                text = custom_input('- Introduce the band strength (cm): ',
+                                    'Integrate (I)')
+                try:
+                   factor =  float(text) / np.log(10)
+                except:
+                    return
+                area_variable = 'column density'
+                area_units = '/cm2'
+            print('- Click two continuum points for estimating the baseline'
+                  ' (press Enter to skip).')
+            click_action_options = {'key': event.key, 'clicked_borders': [],
+                    'area_variable': area_variable, 'area_units': area_units,
+                    'factor': factor}
+            waiting_for_click = True
+        else:
+            clicked_borders = click_action_options['clicked_borders']
+            if clicked_borders is None or len(clicked_borders) == 2:
+                waiting_for_click = False
+                key = click_action_options['key']
+                factor = click_action_options['factor']
+                area_variable = click_action_options['area_variable']
+                area_units = click_action_options['area_units']
+                integrate_fitted_lines = 'ctrl' in key
+                area = integrate_spectrum(spectra[idx], selected_points,
+                           factor, clicked_borders, integrate_fitted_lines)
+                print('Integrated {}: {:.3e} {}'.format(area_variable,
+                                                        area, area_units))
+    elif event.key in ('f', 'F', 'ctrl+f', 'ctrl+F'):
+        if event.key in ('F', 'ctrl+F') and 'abs' not in variable_y:
             print('Error: Spectrum must be in absorbance in order to'
                   ' convert to absorption coefficient, or viceversa.')  
-        elif event.key == 'F' and (len(spectra) > 1 and not using_joint_editing_mode):
+        elif (event.key in ('F', 'ctrl+F')
+                  and (len(spectra) > 1 and not using_joint_editing_mode)):
             print('Error: Change to joint mode (J) to convert from absorbance'
                   ' to absorption coefficient or viceversa.')
-        if event.key == 'f':
+        if event.key in ('f', 'ctrl+f'):
             text = custom_input('- Enter factor to multiply: ', 'Multiply (F)')
             if not in_macro:
                 factor = 1. if text == '' else float(text)
             if factor != 1.:
-                multiply_spectra(spectra, active_indices, selected_points, factor)
+                multiply_lines = event.key == 'ctrl+f'
+                multiply_spectra(spectra, active_indices, selected_points,
+                                 factor, multiply_lines)
                 suffix = 'um' if len(active_indices) == 1 else 'a'
                 print(f'Multiplied spectr{suffix} by a factor of {factor} in'
                       ' selected regions.')
@@ -1876,8 +2376,6 @@ def press_key(event):
                 for (i, spectrum) in enumerate(spectra):
                     if 'baseline' in spectrum:
                         del spectra[i]['baseline']
-                        del spectra[i]['x-ref']
-                        del spectra[i]['y-ref']
                 if variable_y == 'absorption coefficient (cm2)':
                     print('Converted to absorption coefficient.')
                     action_info = {'action': 'convert to absorption coefficient',
@@ -1885,29 +2383,47 @@ def press_key(event):
                 else:
                     action_info = {'action': 'convert to absorbance',
                                    'column density (/cm2)': coldens}
-    elif event.key in ('ctrl+c', 'cmd+c'):
+    elif event.key in ('ctrl+c', 'cmd+c', 'ctrl+C', 'cmd+C'):
         windows = get_windows_from_points(selected_points)
-        copied_data = copy_spectrum_part(spectra[idx], windows)
+        copy_lines = 'C' in event.key
+        copied_data = copy_spectrum_part(spectra[idx], windows, copy_lines)
         print('Copied spectrum in selected regions.')
+        windows_text = get_windows_text(windows)
         action_info = {'action': 'copy spectrum', 'spectrum': spectra_names[idx],
-                       'windows': windows}
+                       'windows': windows_text}
     elif event.key in ('ctrl+v', 'cmd+v'):
         if copied_data is None:
             print('Warning: No data to be pasted.')
         else:
             new_spectrum = paste_spectrum_part(spectra[idx], copied_data)
             spectra[idx] = new_spectrum
-            windows = []
+            windows_text = []
             for spectrum in copied_data:
                 x = spectrum['x']
                 x1, x2 = x.min(), x.max()
-                windows += [[f'({x2:.2f}, {x1:.2f})']]
+                windows_text += [[f'({x2:.2f}, {x1:.2f})']]
             print('Pasted previously copied data in current spectrum.')
             action_info = {'action': 'copy spectrum', 'spectrum': spectra_names[idx],
-                           'windows': windows}
-    elif event.key in ('cmd++', 'alt++') and len(spectra) > 1:
+                           'windows': windows_text}
+    elif event.key == 'u' and len(spectra) > 1:
+        new_name = os.path.commonprefix(spectra_names)
+        if new_name[-1] in ('-', '_', ' '):
+            new_name = new_name[:-1]
+        if new_name == '':
+            new_name = custom_input('Write a name for the resulting joint spectrum: ',
+                                    'Union (U)')
+        new_spectrum = merge_spectra(spectra)
+        spectra = [new_spectrum]
+        spectra_old = copy.deepcopy(spectra)
+        spectra_names = [new_name]
+        active_indices = [0]
+        all_indices = [0]
+        idx = 0
+        print('Performed union of all spectra.')
+        action_info = {'action': 'union of spectra'}
+    elif event.key == 'U' and len(spectra) > 1:
         new_name = custom_input('Write a short name for the resulting spectrum: ',
-                                "Sum (Alt+'+')")
+                                "Sum (Shift+U)")
         x_new = None
         x = spectra[0]['x']
         for i in range(1, len(spectra)):
@@ -1934,24 +2450,27 @@ def press_key(event):
         idx = 0
         print('Summed up all spectra.')
         action_info = {'action': 'sum of spectra'}
-    elif event.key in ('u', 'U') and len(spectra) > 1:
-        if event.key == 'u':
-            new_name = os.path.commonprefix(spectra_names)
-            if new_name[-1] in ('-', '_', ' '):
-                new_name = new_name[:-1]
-        if event.key == 'U' or new_name == '':
-            new_name = custom_input('Write a name for the resulting joint spectrum: ',
-                                    'Union (U)')
-        new_spectrum = merge_spectra(spectra)
-        spectra = [new_spectrum]
-        spectra_old = copy.deepcopy(spectra)
-        spectra_names = [new_name]
-        active_indices = [0]
-        all_indices = [0]
-        idx = 0
-        print('Performed union of all spectra.')
-        action_info = {'action': 'union of spectra'}
-    elif event.key == 'p':
+    elif event.key == 'ctrl+g':
+        1
+    elif event.key in ('e', 'E'):
+        text = custom_input('- Write the path of the baseline file: ',
+                            'Load external baseline (E)')
+        if text != '':
+            if text.endswith(' '):
+                text = text[:-1]
+            filepath = copy.copy(text)
+            if event.key == 'e':
+                column_inds = 'auto'
+            else:
+                text = custom_input('Select the column indices for the baseline'
+                                    ' (x, y).')
+                column_inds = 'auto' if text == '' else list(text)
+            load_external_baseline(spectra, active_indices, selected_points,
+                                   filepath, column_inds)
+            print('Loaded external baseline.')
+            action_info = {'action': 'load external baseline',
+                           'file': filepath}
+    elif event.key in ('p', 'P'):
         global weights, weights_path
         if 'flux' in variable_y:
             print('Error: Cannot use AICE with flux. Convert first to'
@@ -1966,7 +2485,11 @@ def press_key(event):
             x_aice = np.arange(x1, x2, dx)    
             x = spectrum['x']
             if 'abs' in variable_y:   
-                y = spectrum['y']
+                y = copy.copy(spectrum['y'])
+                if event.key == 'P' and 'y-lines' in spectrum:
+                    y_lines = copy.copy(spectrum['y-lines'])
+                    mask = np.isfinite(y_lines)
+                    y[mask] = y_lines[mask]
             else:
                 y = 10**spectrum['y']
             predictions_df = aice_model(x, y, x_aice, weights)
@@ -1993,47 +2516,50 @@ def press_key(event):
             action_info = {'action': f'resample ({kind})',
                            f'{variable} ({units}) array (start, end, step)':
                                list(params)}
-    elif event.key == 'a':
+    elif event.key in ('a', 'd'):
         if variable_y == 'absorbance':
-            if use_optical_depth:
+            if event.key == 'a' and use_optical_depth:
                 use_optical_depth = False
-        elif variable_y != 'transmittance':
-            print('Error: Spectra must be in transmittance to convert to'
-                  ' absorbance.')
-        elif len(spectra) > 1 and not using_joint_editing_mode:
-            print('Error: Change to joint mode (J) to convert to absorbance.')
-        else:
-            compute_absorbance(spectra, active_indices)
-            variable_y = 'absorbance'
-            use_logscale = False
-            invert_yaxis = not invert_yaxis
-            x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
-            y_lims = calculate_ylims(spectra, x_lims_, 1., 99., rel_margin_y)
-            noise_level = compute_noise(spectra)
-            spectra_old = copy.deepcopy(spectra)
-            print('Converted to absorbance.')
-            action_info = {'action': 'convert to absorbance'}
-    elif event.key == 't':
-        if variable_y == 'absorbance':
-            if not use_optical_depth:
+            elif event.key == 'd' and not use_optical_depth:
                 use_optical_depth = True
         elif variable_y != 'transmittance':
+            desired_variable_y = ('absorbance' if event.key == 'a'
+                                  else 'optical depth')
             print('Error: Spectra must be in transmittance to convert to'
-                  ' optical depth.')
-        elif len(spectra) > 1 and not using_joint_editing_mode:
-            print('Error: Change to joint mode (J) to convert to optical depth.')
+                  f' {desired_variable_y}.')
         else:
-            compute_absorbance(spectra, active_indices)
+            compute_absorbance(spectra)
             variable_y = 'absorbance'
-            use_optical_depth = True
+            use_optical_depth = True if event.key == 'd' else False
             use_logscale = False
             invert_yaxis = not invert_yaxis
             x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
             y_lims = calculate_ylims(spectra, x_lims_, 1., 99., rel_margin_y)
             noise_level = compute_noise(spectra)
             spectra_old = copy.deepcopy(spectra)
-            print('Converted to optical depth.')
-            action_info = {'action': 'convert to optical depth'}
+            if event.key == 'a':
+                print('Converted to absorbance.')
+                action_info = {'action': 'convert to absorbance'}
+            else:
+                print('Converted to optical depth.')
+                action_info = {'action': 'convert to optical depth'}
+    elif event.key == 't':
+        if variable_y == 'transmittance':
+            pass
+        elif variable_y != 'absorbance':
+            print('Error: Spectra must be in absorbance / optical depth to'
+                  ' convert to transmittance.')
+        else:
+            compute_transmittance(spectra)
+            variable_y = 'transmittance'
+            use_logscale = False
+            invert_yaxis = not invert_yaxis
+            x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
+            y_lims = calculate_ylims(spectra, x_lims_, 1., 99., rel_margin_y)
+            noise_level = compute_noise(spectra)
+            spectra_old = copy.deepcopy(spectra)
+            print('Converted to transmittance.')
+            action_info = {'action': 'convert to transmittance'}
     elif event.key == 'j':
         if len(all_indices) > 1:
             using_joint_editing_mode = not using_joint_editing_mode
@@ -2049,17 +2575,12 @@ def press_key(event):
     elif event.key == '.':
         using_manual_baseline_mode = not using_manual_baseline_mode
         if len(spectra) > 1:
-            if active_indices != [idx]:
-                active_indices = [idx]
-                extra_msg = ' (only for selected spectrum)' 
-            else:
-                active_indices = copy.copy(all_indices)
-                extra_msg = ' (for all spectra)'
+            extra_msg = (' (for all spectra)' if using_joint_editing_mode
+                         else ' (only for selected spectrum)')
         else:
             extra_msg = ''
         selected_points = []
         if using_manual_baseline_mode:
-            using_joint_editing_mode = False
             print('Using manual baseline mode.' + extra_msg)
             action_info = {'action': 'activate manual baseline mode',
                            'spectrum': spectra_names[idx]}
@@ -2068,8 +2589,6 @@ def press_key(event):
             action_info = {'action': 'activate windows baseline mode'}
     elif event.key == 'l':
         use_logscale = not use_logscale
-    elif event.key == 'º':
-        use_steps_drawstyle = not use_steps_drawstyle
     elif event.key == 'm':
         x_min_, x_max_ = ([x_min, x_max] if not use_microns else
                           [1e4/x_max, 1e4/x_min])
@@ -2086,19 +2605,22 @@ def press_key(event):
         x_lims = [x_lim1, x_lim2]
     elif event.key in ('M', 'ctrl+M') and not in_macro:
         if event.key == 'M':
-            name = input('Drag the macro file: ')
-            if name != '':
-                if name.endswith(' '):
-                    name = name[:-1]
-                with open(name, 'r') as file:
-                    macro_actions = yaml.safe_load(file)
-                name = name.split(sep)[-1]
-        else:
-            name = custom_input('Write the name of the predefined macro: ',
+            text = custom_input('Write the path of the macro file: ',
                                 'Macro (Shift+M)')
-            if name != '':
-                macro_actions = yaml.safe_load(predefined_macros[name])
-        if name != '':
+            if text != '':
+                if text.endswith(' '):
+                    text = text[:-1]
+                filepath = text
+                with open(filepath, 'r') as file:
+                    macro_actions = yaml.safe_load(file)
+                macro_name = filepath.split(sep)[-1]
+        else:
+            text = custom_input('Write the name of the predefined macro: ',
+                                'Macro (Ctrl+M)')
+            if text != '':
+                macro_name = text
+                macro_actions = yaml.safe_load(predefined_macros[macro_name])
+        if text != '':
             print()
             print(f'Starting macro {name}.')
             print('Please, go back to the plot window and click on it.'
@@ -2150,15 +2672,19 @@ def press_key(event):
         action_text = (macro_actions[k] if type(macro_actions[k]) is str
                        else str(macro_actions[k])[1:-1].replace("'",""))
         print(f'Next action: {action_text}')
-    if event.key in ('s', 'S', 'ctrl+s', 'ctrl+S', 'x', 'X', 'n', 'N', 'o', 'O',
-                     'f', 'F', '0', '=', '1', '!', 'a', 't', 'b', 'B', 'r', 'u', 'U',
-                     'cmd++', 'alt++', ',', ';',
-                     'ctrl+c', 'cmd+c', 'ctrl+v', 'cmd+v', 'backspace',
-                     'w', 'W', 'ctrl+W', '.', 'j', 'up', 'down', 'tab'):
+    if event.key in ('b', 'B', 'ctrl+b', 'ctrl+B',
+                     's', 'S', 'ctrl+s', 'ctrl+S',
+                     'x', 'X', 'ctrl+x', 'ctrl+X',
+                     'alt+x', 'alt+X', 'cmd+x', 'cmd+X',
+                     'r', 'a', 't', 'd', 'u', 'U', 'e', 'E', ',', ';',
+                     'n', 'N', 'o', 'O', 'f', 'ctrl+f', 'F', '0', '=', '1', '!',
+                     'ctrl+c', 'cmd+c', 'ctrl+C', 'cmd+C', 'ctrl+v', 'cmd+v',
+                     'w', 'W', 'ctrl+W', 'g', 'G', '.', 'j',
+                     'up', 'down', 'tab', 'alt+tab', 'backspace'):
         if action_info is None:
             pass
         elif event.key not in ('.', 'j', 'up', 'down', 'w', 'W', 'ctrl+W',
-                               'ctrl+c', 'cmd+c', 'tab'):
+                               'ctrl+c', 'cmd+c', 'ctrl+C', 'cmd+C', 'tab'):
             data = {'spectra': spectra,  'spectra_old': spectra_old,
                     'spectra_colors': spectra_colors,
                     'spectra_colors_old': spectra_colors_old,
@@ -2178,6 +2704,9 @@ def press_key(event):
         plot_windows(selected_points, use_microns)
     else:
         plot_baseline_points(selected_points)
+    if (click_action_options != {}
+            and click_action_options['clicked_borders'] != []):
+        plot_baseline_points(click_action_options['clicked_borders'])
     if in_macro and k == len(macro_actions):
         k = 0
         in_macro = False
@@ -2300,7 +2829,7 @@ if use_csv_format_for_input:
             name = filename.split(sep)[-1] + ' - ' + columns[i]
             y = data[inds,i+1]
             x_, y_, _ = fill_spectrum(x, y)
-            spectrum = {'x': x_, 'y': y_, 'y_unc': None, 'edited': False}
+            spectrum = {'x': x_, 'y': y_, 'y-unc': None, 'edited': False}
             spectra += [spectrum]
             spectra_names += [name]
 else:
@@ -2328,7 +2857,7 @@ else:
         if y_unc is not None:
             y_unc = y_unc[inds]
         x, y, y_unc = fill_spectrum(x, y, y_unc)
-        spectrum = {'x': x, 'y': y, 'y_unc': y_unc, 'edited': False}
+        spectrum = {'x': x, 'y': y, 'y-unc': y_unc, 'edited': False}
         spectra += [spectrum]
         spectra_names += [name]
         i += 1
@@ -2405,40 +2934,52 @@ Instructions
   clicking with the cursor and then press B. If you press Shift+B, you can
   write the smoothing parameter for the baseline estimation.
 - Press R to reduce the spectra using the current baseline. If spectra are in
-  flux, they will be divided by the baseline, converting them to transmittance.
-  In transmittance or absorbance, the baseline will be subtracted from the
-  spectra.
+  flux, they will be divided by the baseline, converting them to transmittance
+  (same as pressing T). In transmittance, spectra will be divided by the
+  baseline. In absorbance, the baseline will be subtracted from the spectra.
+- If spectra are in transmission, press A or D to convert to absorbance or
+  optical depth. In absorbance or optical depth, press D or A to switch the
+  scale, or press T to convert to transmission.
 - Press M to switch between wavenumber and wavelength. Press L to switch
   between linear and logarithmic scale. If spectra are not in flux, press
   Ctrl+'-' to invert the vertical axis.
-- If spectra are in transmission, press A or T to convert to absorbance or
-  optical depth. In absorbance or optical depth, press T or A to switch the
-  scale.
 - Press S to smooth the data in the selected windows. If your press Shift+S,
   you can write the smoothing factor in the terminal.
 - Press X to remove and interpolate the selected regions, or Shift+X to specify
   a smoothing factor the interpolation and apply it.
 - Press N to add Gaussian noise in the selected windows, or Shift+N to specify
   the standard deviation and add it.
-- Press 0 to set the selected windows to zero, or Shift+0 (or '=') to only do so
-  for negative absorbance values; if using manual selection of points, this
+- Press 0 to set the selected windows to zero, or Shift+0 (or '=') to only do
+  so for negative absorbance values; if using manual selection of points, this
   will automatically select a set of uniform zero points.
 - If spectra are in transmission, press 1 to set the selected windows to one,
   or Shift+1 (or '!') to only do so for values greater than one.
 - Press O to enter and add an offset to the spectra in the selected regions or
   Shift+O to subtract the current baseline.
-- Press U to perform the union of all spectra into a single spectrum.
+- Press U to perform the union of all spectra into a single spectrum. Press
+  Shift+U to perform the sum of all the spectra into a single spectrum.
+- Press E to import a baseline from an external file.
 - Press P to use AICE to predict the composition of the ice (in transmittance
-  or absorbance / optical depth).
-- Press I to integrate the selected spectrum in the current window, or Shift+I
-  to introduce a band strength and integrate the column density.
+  or absorbance / optical depth). If you press Shift+P, AICE will consider the
+  previously fitted Gaussians instead of the spectrum where possible.
+- Press G to fit a Gaussian in the selected windows, or Shift+G to do so fixing
+  the line center. Adding Ctrl will allow for fitting extra Gaussian lines.
+  Press Alt+Tab to remove the Gaussians in the current windows. Press I to
+  integrate the selected spectrum in the current window, or Shift+I to
+  introduce a band strength and integrate the column density. If you also press
+  Ctrl, the integration will be performed over the previously fitted Gaussians.
 - Press F to multiply the selected regions by the specified factor, or Shift+F
   to convert from absorbance to absorption coefficient or viceversa (using the
   input column density).
 - Press ',' or Shift+',' (or ';') to resample the spectra to the given array
   (simple or precise method, respectively).
-- If there are more than one spectrum, press J to activate the individual
-  editing mode or to restore the joint mode.
+- If there is more than one spectrum, press J to activate the individual
+  editing mode or to restore the joint editing mode.
+- Press Ctrl+C or Cmd+C to copy the current spectrum in the selected region,
+  and Ctrl+V or Cmd+V to paste and replace the copied data in the current
+  selected spectrum. Press Shift+Ctrl+C or Shift+Cmc+C to copy the previously
+  fitted Gaussians in the current windows instead, and then use Ctrl+V or Cmd+V
+  to paste them to the current spectrum.
 - Press Backspace to remove the selected regions from the current spectrum/
   spectra, or the whole selected spectrum if there are no selected regions.
 - Press Shift+M to load a macro/algorithm to apply, or Control+M to use one of
@@ -2464,9 +3005,10 @@ using_manual_baseline_mode = False
 invert_yaxis = False
 use_logscale = False
 use_microns = False
-use_steps_drawstyle = True
 in_macro = False
 copied_data = None
+waiting_for_click = False
+click_action_options = {}
 ilog, jlog, idx, k = 0, 0, 0, 0
 save_action_log = True
 old_x_lims = copy.copy(x_lims)
