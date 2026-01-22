@@ -12,7 +12,7 @@ Andrés Megías.
 # AICE parameters.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
 weights_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice-weights.npy'
-aice_xrange_params = [980, 3751., 1.]  # /cm
+aice_xrange_params = [980, 4001., 1.]  # /cm
 aice_resolution = 2.  # /cm
 # Matplotlib backend.
 backend = 'qtagg'
