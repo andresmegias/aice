@@ -12,7 +12,7 @@ Andrés Megías.
 # AICE parameters.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
 weights_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice-weights.npy'
-aice_xrange_params = [2100., 3751., 1.]  # /cm
+aice_xrange_params = [980, 3751., 1.]  # /cm
 aice_resolution = 2.  # /cm
 # Matplotlib backend.
 backend = 'qtagg'
@@ -666,7 +666,7 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     if 'y-lines' in spectrum:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
         y = spectrum['y-lines'] * factor
-        plt.plot(x, y, linestyle='-', lw=0.9*dlw, zorder=2.7, drawstyle=ds,
+        plt.plot(x, y, linestyle='-', lw=0.9*dlw, zorder=2.9, drawstyle=ds,
                  color=colors['lines'], label='fitted lines')
     if spectrum['edited']:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
@@ -795,7 +795,7 @@ def plot_windows(selected_points, use_microns):
 
 def plot_baseline_points(selected_points):
     """Plot the current selected baseline points."""
-    if selected_points is not None and len(selected_points) > 0:
+    if selected_points not in (0, None) and len(selected_points) > 0:
         x, y = np.array(selected_points).T
         x = 1e4 / x if use_microns else x
         plt.plot(x, y, '.', color=colors['selected-points'], zorder=3.)
@@ -823,7 +823,7 @@ def estimate_baseline(spectra, active_indices, selected_points, smooth_size,
             y_base[mask] = y_base_prev[mask]
         spectra[i]['y-base'] = y_base
 
-def reduce_spectra(spectra, active_indices, variable_y):
+def reduce_spectra(spectra, active_indices, mode, use_lines=False):
     """Reduce the spectra subtracting the pre-computed existing baselines."""
     for i in active_indices:
         spectrum = spectra[i]
@@ -831,17 +831,35 @@ def reduce_spectra(spectra, active_indices, variable_y):
             y = spectrum['y']
             y_unc = spectrum['y-unc']
             y_base = spectrum['y-base']
-            if 'abs' in variable_y: 
+            if mode == 'subtract':
                 y_red = y - y_base 
                 y_red_unc = y_unc if y_unc is not None else None
-            else:
+            elif mode == 'divide':
                 y_red = y / y_base
                 y_red_unc = np.abs(y_unc / y_base) if y_unc is not None else None
             spectra[i]['edited'] = True
             spectra[i]['y'] = y_red
             spectra[i]['y-unc'] = y_red_unc 
-            if 'flux' in variable_y:
-                del spectra[i]['y-base']
+            
+def subtract_lines(spectra, active_indices, windows):
+    """Remove the previously fitted lines in current windows."""
+    for i in active_indices:
+        spectrum = spectra[i]
+        if 'y-lines' in spectrum:
+            y = spectrum['y']
+            y_unc = spectrum['y-unc']
+            y_lines = np.nan_to_num(spectrum['y-lines'], nan=0.)
+            y_red = copy.copy(y)
+            y_red_unc = copy.copy(y_unc) if y_unc is not None else None
+            for (x1, x2) in windows:
+                mask = (x >= x1) & (x <= x2)
+                y_red[mask] = y[mask] - y_lines[mask]
+                y_lines[mask] = np.nan
+            y_lines[y_lines==0.] = np.nan
+            spectra[i]['edited'] = True
+            spectra[i]['y'] = y_red
+            spectra[i]['y-unc'] = y_red_unc 
+            spectra[i]['y-lines'] = y_lines
 
 def remove_regions(spectra, active_indices, selected_points):
     """Remove the selected regions of the data."""
@@ -925,18 +943,22 @@ def gaussian(x, mean=0, std=1, height=1, ssf=1):
         y = y_.reshape(-1, ssf).mean(axis=1)
     return y
 
-def fit_gaussian(spectra, active_indices, windows, line_borders,
-                 center=None):
+def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
     """Fit Gaussians to given spectra in the current windows."""
-    global use_microns
+    fix_center = False if center is None else True
     for j in active_indices:
+        if not fix_center:
+            center = None
         spectrum = spectra[j]
         x = spectrum['x']
         y = spectrum['y']
+        y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
+                   else np.zeros(len(x)))
+        y_lines = np.nan_to_num(y_lines, nan=0.)
         mask = np.zeros(len(x), bool)
         for (x1, x2) in windows:
             mask |= (x >= x1) & (x <= x2)
-        if line_borders is not None:
+        if line_borders not in (0, None):
             if line_borders[0][0] > line_borders[1][0]:
                 line_borders = [line_borders[1], line_borders[0]]
             x1, y1 = line_borders[0]
@@ -945,29 +967,33 @@ def fit_gaussian(spectra, active_indices, windows, line_borders,
         mask &= np.isfinite(y)
         x_ = x[mask]
         y_ = y[mask]
-        if line_borders is not None:
+        y_lines_ = y_lines[mask]
+        if line_borders not in (0, None):
             x1w = np.min(windows)
             x2w = np.max(windows)
             x1 = max(x1, x1w)
             x2 = min(x2, x2w)
         else:
-            y_b = np.zeros(len(x_))
             x1, x2 = x_[0], x_[-1]
-            y1, y2 = y_[0], y_[-1]
-        y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
-        width = (x2 - x1) / 2
+            y1, y2 = (y_[0], y_[-1]) if line_borders != 0 else (0, 0)
+        baseline = lambda x: y1 + (y2 - y1) / (x2 - x1) * (x - x1)
+        y_b = baseline(x_) + y_lines_
+        xrange = x2 - x1
+        width = xrange / 4
         height = np.max(y_)
         ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
         if center is None:
             center = np.mean(x_)
             guess = [center, width, height]
             function = lambda x,m,s,h: gaussian(x, m, s, h, ssf)
+            bounds = [[x1, 0., 0.], [x2, 5*xrange, 40*height]]
         else:
             guess = [width, height]
             m = center
             function = lambda x,s,h: gaussian(x, m, s, h, ssf)
-        fit_params = scipy.optimize.curve_fit(function, x_, y_-y_b, p0=guess)[0]
-        if len(fit_params) == 3:
+        fit_params = scipy.optimize.curve_fit(function, x_, y_-y_b, p0=guess,
+                                              bounds=bounds)[0]
+        if not fix_center:
             center, width, height = fit_params
         else:
             width, height = fit_params
@@ -982,12 +1008,16 @@ def fit_gaussian(spectra, active_indices, windows, line_borders,
             units1 = units2 = '(/cm)'
         print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
               f'width {units2}, {width:.1f}; height, {height:.2f}.')
-        mask = (x >= x1) & (x <= x2)
-        y_b = np.interp(x[mask], x_, y_b)
-        y_f = function(x[mask], *fit_params) + y_b
         y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
                    else np.full(len(x), np.nan))
-        y_lines[mask] = y_f
+        y_lines = np.nan_to_num(y_lines, nan=0.)
+        x1 = min(x1, center - 4*width)
+        x2 = max(x2, center + 4*width)
+        mask = (x >= x1) & (x <= x2)
+        x_ = x[mask]
+        y_f = function(x_, *fit_params) + baseline(x_)
+        y_lines[mask] += y_f
+        y_lines[y_lines == 0.] = np.nan
         spectra[j]['y-lines'] = y_lines
 
 def gaussians(x, ssf, *params, centers=None):
@@ -1007,7 +1037,7 @@ def gaussians(x, ssf, *params, centers=None):
             y += gaussian(x, mean, std, height, ssf)
     return y
 
-def multigaussian_fit(x, y, num_curves=1, ssf=1, max_iters=20, centers=None,
+def multigaussian_fit(x, y, num_curves=1, ssf=1, centers=None, max_iters=10,
                       verbose=False, old_results=None):
     """
     Make a fit of multiple Gaussians to the input data.
@@ -1022,7 +1052,7 @@ def multigaussian_fit(x, y, num_curves=1, ssf=1, max_iters=20, centers=None,
         Number of bins in which to supersample the gaussian function.
         The default is 1.
     max_iters : int, optional
-        Number of maximum calls of the function. The default is 20.
+        Number of maximum calls of the function. The default is 10.
     centers : list, optional
         List of fixed centers for the Gaussians.
     verbose : bool, optional
@@ -1044,16 +1074,16 @@ def multigaussian_fit(x, y, num_curves=1, ssf=1, max_iters=20, centers=None,
     xrange = x2 - x1
     height = np.mean(y)
     mean = np.mean(x)
-    std = xrange / 5
-    means = np.random.normal(mean, std, num_curves)
-    guess, bounds_inf, bounds_sup = [], [], []
-    for i in range(len(means)):
-        fix_center = centers is not None and i < len(centers)
-        mean = centers[i] if fix_center else means[i]
+    std = xrange / 4
+    means = np.random.uniform(x1, x2, num_curves)
+    fixed_num_curves = False if centers is None else True
+    guess, bounds_inf, bounds_sup, fix_centers = [], [], [], []
+    for i in range(num_curves):
+        mean = centers[i] if fix_centers else means[i]
         guess += [mean, std, height]
-        bound_mean_inf = x1 if not fix_center else mean - 0.01*std
-        bound_mean_sup = x2 if not fix_center else mean + 0.01*std
-        bounds_inf += [bound_mean_inf, 0., -40*height]
+        bound_mean_inf = x1 if not fix_centers else mean - 0.01*std
+        bound_mean_sup = x2 if not fix_centers else mean + 0.01*std
+        bounds_inf += [bound_mean_inf, 0., 0.]
         bounds_sup += [bound_mean_sup, 5*xrange, 40*height]
     bounds = (bounds_inf, bounds_sup)
     # Fit.
@@ -1067,48 +1097,41 @@ def multigaussian_fit(x, y, num_curves=1, ssf=1, max_iters=20, centers=None,
     r2 = 1 - (ss_res / ss_tot)
     if verbose:
         print('num_curves, r2, max_iters: ', num_curves, r2, max_iters)
-    # Window of the fit.
-    means = popt[1::3]
-    sigmas = abs(popt[2::3])
-    i1 = means.argmin()
-    i2 = means.argmax()
-    window = [means[i1] - 4*sigmas[i1], means[i2] + 4*sigmas[i2]]
-    # Condition for finishing or adding another gaussian curve.
-    if old_results and old_results[-1] > 0.5 and (r2 - old_results[-1]) < 0.05:
+    # Condition for returning to previous fit.
+    if old_results and (r2 - old_results[-1]) < 2e-3:
         if verbose:
-            print('Returning to previous fit.')
-        if old_results[-1] > 0.9:
+            print('Returning to previous fit. Finished.')
+        return old_results
+    # Condition for finishing or adding another curve.
+    if not fixed_num_curves:
+        if r2 > 0.99 or max_iters == 1:
             if verbose:
                 print('Finished.')
-            return old_results
+            return popt, r2
         else:
-            print('Error: Fitting failed.')
-            return [], None, None
-    if r2 > 0.9 or num_curves > 5 or max_iters == 0:
-        if r2 > 0.9:
-            if verbose:
-                print('Finished.')
-            return popt, window, r2
-        else:
-            print('Error: Fitting failed.')
-            return [], None, None
-    else: 
-        num_curves += 1
-        old_results = (copy.copy(popt), copy.copy(window), copy.copy(r2))
-        return multigaussian_fit(x, y, num_curves, ssf, max_iters-1, centers,
-                                 verbose, old_results)
+            old_results = (copy.copy(popt), copy.copy(r2))
+            return multigaussian_fit(x, y, num_curves+1, ssf, centers,
+                                     max_iters-1, verbose, old_results)
+    else:
+        if verbose:
+            print('Finished.')
+        return popt, r2
         
-def fit_gaussians(spectra, active_indices, windows, line_borders, centers=None):
+def fit_gaussians(spectra, active_indices, windows, line_borders,
+                  centers=None):
     """Fit Gaussians to given spectra in the current windows."""
     global use_microns
     for j in active_indices:
         spectrum = spectra[j]
         x = spectrum['x']
         y = spectrum['y']
+        y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
+                   else np.zeros(len(x)))
+        y_lines = np.nan_to_num(y_lines, nan=0.)
         mask = np.zeros(len(x), bool)
         for (x1, x2) in windows:
             mask |= (x >= x1) & (x <= x2)
-        if line_borders is not None:
+        if line_borders not in (0, None):
             if line_borders[0][0] > line_borders[1][0]:
                 line_borders = [line_borders[1], line_borders[0]]
             x1, y1 = line_borders[0]
@@ -1117,7 +1140,8 @@ def fit_gaussians(spectra, active_indices, windows, line_borders, centers=None):
         mask &= np.isfinite(y)
         x_ = x[mask]
         y_ = y[mask]
-        if line_borders is not None:
+        y_lines_ = y_lines[mask]
+        if line_borders not in (0, None):
             x1w = np.min(windows)
             x2w = np.max(windows)
             x1 = max(x1, x1w)
@@ -1125,14 +1149,19 @@ def fit_gaussians(spectra, active_indices, windows, line_borders, centers=None):
         else:
             y_b = np.zeros(len(x_))
             x1, x2 = x_[0], x_[-1]
-            y1, y2 = y_[0], y_[-1]
-        y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
+            y1, y2 = (y_[0], y_[-1]) if line_borders != 0. else (0., 0.)
+        baseline = lambda x: y1 + (y2 - y1) / (x2 - x1) * (x - x1)
+        y_b = baseline(x_) + y_lines_
         ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
         function = lambda x,*args: gaussians(x, ssf, *args)
-        fit_params = multigaussian_fit(x_, y_, ssf=ssf, centers=centers,
+        num_curves = len(centers) if centers is not None else 1
+        fit_params = multigaussian_fit(x_, y_-y_b, num_curves, ssf, centers,
                                        verbose=False)[0]
+        edges = []
+        print('Gaussians parameters:')
         for i in range(0, len(fit_params), 3):
             center, width, height = fit_params[i:i+3]
+            edges += [[center - 4*width, center + 4*width]]
             if use_microns:
                 width = 1e3 * (1e4 / (center - width/2) - 1e4 / (center + width/2))
                 center = 1e4 / center
@@ -1142,14 +1171,19 @@ def fit_gaussians(spectra, active_indices, windows, line_borders, centers=None):
             else:
                 nd = 1
                 units1 = units2 = '(/cm)'
-            print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
+            print(f'- center {units1}, {center:.{nd}f}; '
                   f'width {units2}, {width:.1f}; height, {height:.2f}.')
-        mask = (x >= x1) & (x <= x2)
-        y_b = np.interp(x[mask], x_, y_b)
-        y_f = function(x[mask], *fit_params) + y_b
         y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
                    else np.full(len(x), np.nan))
-        y_lines[mask] = y_f
+        y_lines = np.nan_to_num(y_lines, nan=0.)
+        x1 = min(x1, np.min(edges))
+        x2 = max(x2, np.max(edges))
+        mask = (x >= x1) & (x <= x2)
+        x_ = x[mask]
+        y_b = baseline(x_)
+        y_f = function(x_, *fit_params) + y_b
+        y_lines[mask] += y_f
+        y_lines[y_lines == 0.] = np.nan
         spectra[j]['y-lines'] = y_lines
         
 def remove_fitted_lines(spectra, active_indices, windows):
@@ -1296,13 +1330,13 @@ def add_offset(spectra, active_indices, selected_points, offset):
         spectrum = spectra[i] 
         x = spectrum['x']
         y = spectrum['y']
-        if not using_manual_baseline_mode or selected_points == [x_max, x_min]:
+        if type(offset) is float:
             for (x1, x2) in windows:
                 mask = (x >= x1) & (x <= x2)
                 y[mask] = y[mask] + offset
         else:
-            offset = create_baseline(x, y, selected_points)
-            y -= offset
+            offset = spectrum['y-base']
+            y += offset
         spectra[i]['edited'] = True
         spectra[i]['y'] = y
         
@@ -1423,7 +1457,7 @@ def copy_spectrum_part(spectrum, windows, copy_lines=False):
     """Make a copy of the spectrum in the windows defined by the input points."""
     x = spectrum['x']
     y = spectrum['y'] if not copy_lines else spectrum['y-lines']
-    y_unc = spectrum['y-unc']
+    y_unc = spectrum['y-unc'] if  not copy_lines else None
     copied_data = []
     for x1x2 in windows:
         x1, x2 = min(x1x2), max(x1x2)
@@ -1592,18 +1626,31 @@ def get_points_text(selected_points):
     return points_text
          
 def save_files(spectra, active_indices, spectra_names, original_filemames,
-               save_only_baseline=False):
+               saved_var='spectrum'):
     """Save processed spectra."""
+    if saved_var not in ('spectrum', 'baseline', 'lines'):
+        print('Error: Wrong variable to save.')
+        return None, None
+    else:
+        if saved_var == 'spectrum':
+            yvar = 'y'
+            extra_text = ''
+        elif saved_var == 'baseline':
+            yvar = 'y-base'
+            extra_text = ' (baseline)'
+        elif saved_var == 'lines':
+            yvar = 'y-lines'
+            extra_text = ' (fitted lines)'
     global original_folder, columns, variable_y, use_csv_format_for_input
     spectra_names_active_indices = np.array(spectra_names)[active_indices]
     nonedited_spectra = [not spectra[i]['edited'] for i in active_indices]
-    intensity_variable = 'y' if not save_only_baseline else 'y-base'
     if all(nonedited_spectra):
         print('No editing of the spectra was performed.\n')
     elif any(nonedited_spectra):
         print('Not all spectra have been edited.\n')
-    extra_text = ' (baseline)' if save_only_baseline else ''
-    filename = custom_input(f'- Output filename{extra_text}: ', 'Save spectra')
+    filename = custom_input(f'- Output filename{extra_text}: ', 'Save files')
+    if filename == '':
+        return None, None
     if filename.endswith(' '):
         filename = filename[:-1]
     if filename in ('same', '*', '') and len(original_filenames) == 1:
@@ -1649,7 +1696,7 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         for (i,spectrum) in enumerate(selected_spectra):
             column = columns[i]
             x_i = spectrum['x']
-            y_i = spectrum[intensity_variable]
+            y_i = spectrum[yvar]
             if use_microns:
                 x_i = 1e4/x_i
             if variable_y == 'absorbance' and use_optical_depth:
@@ -1668,8 +1715,8 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         columns = spectra_names[idx]
         spectrum = spectra[idx]
         x = spectrum['x']
-        y = spectrum['y']
-        y_unc = spectrum['y-unc']
+        y = spectrum[yvar]
+        y_unc = spectrum['y-unc'] if yvar == 'y' else None
         variable_x_ = variable_x_.replace(' ', '_')
         variable_y_ = variable_y.replace(' ', '_')
         if variable_y == 'absorbance' and use_optical_depth:
@@ -1696,10 +1743,11 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
                 units = units[:-1]
                 header += f' {variable}_unc._({units})'
         np.savetxt(filename, data, fmt=fmt, header=header)
-    saved_var = 'spectrum' if not save_only_baseline else 'baseline'
+    if yvar == 'y-lines':
+        saved_var = 'set of fitted line(s)'
     if num_spectra > 1:
         saved_var = (saved_var.replace('spectrum', 'spectra')
-                     .replace('baseline', 'baselines'))
+                     .replace('baseline', 'baselines').replace('set', 'sets'))
     print('\n'f'Saved {num_spectra} {saved_var} in {filename}')
     output_data_info = {'file': filename.split(sep)[-1], 'columns': columns,
                         'number of spectra': len(spectra)}
@@ -1938,20 +1986,29 @@ def press_key(event):
                 else:
                     print(f'Unknown action: {action}.')
             k += 1
-    elif waiting_for_click and event.key == 'escape':
-        waiting_for_click = False
+    elif waiting_for_click:
+        if event.key == 'escape':
+            waiting_for_click = False
+        elif event.key == 'enter':
+            click_action_options['clicked_borders'] = None
+            event.key = click_action_options['key']
+        elif event.key == '0':
+            click_action_options['clicked_borders'] = 0
+            event.key = click_action_options['key']
     elif event.key == 'escape':
         plt.close(1)
         return
     elif event.key in ('shift+enter', 'ctrl+enter', 'cmd+enter', 'alt+enter'):
         data_log = data_log[:ilog+1]
         action_log = action_log[:jlog+1]
-        output_data_info, filename = save_files(spectra, active_indices,
-                                                spectra_names, original_filenames)
         if event.key in ('cmd+enter', 'alt+enter'):
-            save_files(spectra, active_indices, spectra_names, filenames,
-                       save_only_baseline=True)
-        if 'shift' in event.key:
+            saved_var = custom_input('- Variable to save (spectrum, baseline, lines)',
+                                     'Save files')
+        else:
+            saved_var = 'spectrum'
+        output_data_info, filename = save_files(spectra, active_indices,
+                                  spectra_names, original_filenames, saved_var)
+        if event.key == 'shift+enter':
             save_action_record(action_log, spectra, filename, output_data_info)
     x_lims = list(sorted(plt.xlim()))
     y_lims = list(sorted(plt.ylim()))
@@ -2136,6 +2193,9 @@ def press_key(event):
             print(f'Added normal noise with a standard deviation of {factor:.3e}.')
             action_info = {'action': 'add noise', 'noise level': f'{factor:.3e}'}
     elif event.key in ('b', 'B', 'ctrl+b', 'ctrl+B'):
+        if len(selected_points) < 2:
+            print('Error: No windows selected.')
+            return
         if not in_macro:
             factor = copy.copy(baseline_smooth_size)
         if event.key in ('B', 'ctrl+B') and not using_manual_baseline_mode:
@@ -2159,30 +2219,50 @@ def press_key(event):
                 print(f'Computed baseline{suffix} from reference points.')
                 factor = 1
             action_info = {'action': 'estimate baseline', 'smoothing factor': factor}
-    elif event.key == 'r' or 'flux' in variable_y and event.key == 't':
-        baselines_in_spectra = ['y-base' in spectrum for spectrum in spectra]
-        if ('abs' not in variable_y
-                and (not all(baselines_in_spectra)
-                     or len(spectra) > 1 and not using_joint_editing_mode)):
-            print('Error: If working in flux or transmittance, baselines'
-                  ' must be computed for all the spectra and subtracted all at'
-                  ' once. Make sure you compute all the baselines (B) and you'
-                  ' are working in the joint mode (J) before trying to reduce.')
-        elif not using_joint_editing_mode and 'y-base' not in spectra[idx]:
-            print('Error: There is no baseline to subtract.'
-                  ' Press B to compute the baseline.')
+    elif event.key in ('r', 'R') or 'flux' in variable_y and event.key == 't':
+        baselines_in_spectra = ['y-base' in spectra[i] for i in active_indices]
+        if ('abs' not in variable_y and not all(baselines_in_spectra)
+                or ('abs' in variable_y and event.key == 'r'
+                and not all(baselines_in_spectra))):
+            if using_joint_editing_mode:
+                print('Error: Not all spectra have baselines computed.')
+            else:
+                print('Error: No baseline computed.')
+            return
         else:
-            reduce_spectra(spectra, active_indices, variable_y)
-            suffix = 'um' if len(active_indices) == 1 else 'a'
-            extra_msg = ('by converting to transmittance' if 'flux' in variable_y
-                         else 'by subtracting the baseline')
-            print(f'Reduced selected spectr{suffix} {extra_msg}.')
-            if 'flux' in variable_y:
-                variable_y = 'transmittance'
-                spectra_old = copy.deepcopy(spectra)
-                x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
-                y_lims = calculate_robust_ylims(spectra, x_lims_, rel_margin_y)
-            action_info = {'action': 'reduce'}
+            lines_in_spectra = ['y-lines' in spectra[i] for i in active_indices]
+            if not all(lines_in_spectra):
+                if using_joint_editing_mode:
+                    print('Error: Not all specra have fitted lines.')
+                else:
+                    print('Error: No fitted lines.')
+                return
+        if 'abs' not in variable_y:
+            if 'flux' in variable_y and event.key == 't':
+                event.key = 'r'
+            mode = 'divide' if event.key == 'r' else 'subtract'
+        else:
+            mode = 'subtract'
+            use_lines = True if event.key == 'R' else False
+        if not use_lines:
+            reduce_spectra(spectra, active_indices, mode)
+        else:
+            windows = (get_windows_from_points(selected_points)
+                       if len(selected_points) > 1 else [[x_min, x_max]])
+            subtract_lines(spectra, active_indices, windows)
+        suffix = 'um' if len(active_indices) == 1 else 'a'
+        extra_msg = ('by converting to transmittance using the baseline'
+                     if 'flux' in variable_y and event.key == 'r'
+                     else 'by subtracting the baseline')
+        print(f'Reduced selected spectr{suffix} {extra_msg}.')
+        if 'flux' in variable_y and event.key == 'r':
+            variable_y = 'transmittance'
+            spectra_old = copy.deepcopy(spectra)
+            x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
+            y_lims = calculate_robust_ylims(spectra, x_lims_, rel_margin_y)
+            for i in active_indices:
+                del spectra[i]['y-base']
+        action_info = {'action': 'reduce'}
     elif event.key in ('0', '='):
         if not using_manual_baseline_mode:
             if event.key == '0':
@@ -2228,7 +2308,12 @@ def press_key(event):
             except:
                 offset = None
         if event.key == 'O':
-            offset = 'baseline' if selected_points != [] else None
+            baselines_in_spectra = ['y-base' in spectra[i] for i in active_indices]
+            if not all(baselines_in_spectra):
+                print('Error: Baseline should be computed for all selected spectra.')
+                return
+            offset = ('baseline' if using_manual_baseline_mode
+                      and selected_points != [] else None)
         if offset is not None:
             add_offset(spectra, active_indices, selected_points, offset)
             if not using_manual_baseline_mode or selected_points == []:
@@ -2252,23 +2337,26 @@ def press_key(event):
                                         'Gaussian fit (G)').replace(' ', '')
                     if text == '':
                         return
-                    centers = [float(x) for x in text.split(',')]
+                    centers = text.split(',')
+                    for (i, x) in enumerate(centers):
+                        if x == '':
+                            centers[i] = None
+                        else:
+                            centers[i] = float(x)
                 else:
                     centers = None
                 if 'ctrl' in event.key:
                     fit_function = fit_gaussians
                 else:
                     fit_function = fit_gaussian
-                    if centers is not None:
-                        centers = centers[0]
                 print('Click two reference points for the line borders'
                       ' (press Enter to skip).')
                 click_action_options = {'key': event.key, 'centers': centers,
-                               'fit_function': fit_function, 'clicked_borders': []}
+                        'fit_function': fit_function, 'clicked_borders': []}
                 waiting_for_click = True
             else:
                 clicked_borders = click_action_options['clicked_borders']
-                if clicked_borders is None or len(clicked_borders) == 2:
+                if clicked_borders in (0, None) or len(clicked_borders) == 2:
                     waiting_for_click = False
                     centers = click_action_options['centers']
                     fit_function = click_action_options['fit_function']
@@ -2276,17 +2364,13 @@ def press_key(event):
                                  centers)
                     windows_text = get_windows_text(windows)
                     action_info = {'action': 'fit line', 'windows': windows_text}
-                    if clicked_borders is not None:
+                    if clicked_borders not in (0, None):
                         x1, y1 = clicked_borders[0]
                         x2, y2 = clicked_borders[1]
                         line_borders_text = (f'({x1:.3f}), ({y1:.3f});'
                                              ' ({x2:.3f}), ({y2:.3f})')
                         action_info['line borders'] = line_borders_text
-                    if centers is not None:
-                        action_info['centers'] = centers
-    elif waiting_for_click and event.key == 'enter':
-        click_action_options['clicked_borders'] = None
-        press_key(SimpleNamespace(key=click_action_options['key']))
+                    action_info['centers'] = centers
     elif event.key == 'alt+tab':
         windows = get_windows_from_points(selected_points)
         remove_fitted_lines(spectra, active_indices, windows)
@@ -2318,7 +2402,7 @@ def press_key(event):
             waiting_for_click = True
         else:
             clicked_borders = click_action_options['clicked_borders']
-            if clicked_borders is None or len(clicked_borders) == 2:
+            if clicked_borders in (0, None) or len(clicked_borders) == 2:
                 waiting_for_click = False
                 key = click_action_options['key']
                 factor = click_action_options['factor']
@@ -2333,10 +2417,10 @@ def press_key(event):
         if event.key in ('F', 'ctrl+F') and 'abs' not in variable_y:
             print('Error: Spectrum must be in absorbance in order to'
                   ' convert to absorption coefficient, or viceversa.')  
+            return
         elif (event.key in ('F', 'ctrl+F')
                   and (len(spectra) > 1 and not using_joint_editing_mode)):
-            print('Error: Change to joint mode (J) to convert from absorbance'
-                  ' to absorption coefficient or viceversa.')
+            using_joint_editing_mode = True
         if event.key in ('f', 'ctrl+f'):
             text = custom_input('- Enter factor to multiply: ', 'Multiply (F)')
             if not in_macro:
@@ -2374,8 +2458,8 @@ def press_key(event):
                 x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
                 y_lims = calculate_ylims(spectra, x_lims_, 1., 99., rel_margin_y)
                 for (i, spectrum) in enumerate(spectra):
-                    if 'baseline' in spectrum:
-                        del spectra[i]['baseline']
+                    if 'y-base' in spectrum:
+                        del spectra[i]['y-base']
                 if variable_y == 'absorption coefficient (cm2)':
                     print('Converted to absorption coefficient.')
                     action_info = {'action': 'convert to absorption coefficient',
@@ -2676,10 +2760,10 @@ def press_key(event):
                      's', 'S', 'ctrl+s', 'ctrl+S',
                      'x', 'X', 'ctrl+x', 'ctrl+X',
                      'alt+x', 'alt+X', 'cmd+x', 'cmd+X',
-                     'r', 'a', 't', 'd', 'u', 'U', 'e', 'E', ',', ';',
+                     'r', 'R', 'a', 't', 'd', 'u', 'U', 'e', 'E', ',', ';',
                      'n', 'N', 'o', 'O', 'f', 'ctrl+f', 'F', '0', '=', '1', '!',
                      'ctrl+c', 'cmd+c', 'ctrl+C', 'cmd+C', 'ctrl+v', 'cmd+v',
-                     'w', 'W', 'ctrl+W', 'g', 'G', '.', 'j',
+                     'w', 'W', 'ctrl+W', 'g', 'G', 'ctrl+g', 'ctrl+G', '.', 'j',
                      'up', 'down', 'tab', 'alt+tab', 'backspace'):
         if action_info is None:
             pass
@@ -2935,8 +3019,11 @@ Instructions
   write the smoothing parameter for the baseline estimation.
 - Press R to reduce the spectra using the current baseline. If spectra are in
   flux, they will be divided by the baseline, converting them to transmittance
-  (same as pressing T). In transmittance, spectra will be divided by the
+  (same as pressing T). In transmittance, spectra will also be divided by the
   baseline. In absorbance, the baseline will be subtracted from the spectra.
+  In flux or transmittance, Shift+R will subtract the baseline instead of
+  dividing by it, while in absorbance it will subtract the previously fitted
+  lines in the current windows from the spectra.
 - If spectra are in transmission, press A or D to convert to absorbance or
   optical depth. In absorbance or optical depth, press D or A to switch the
   scale, or press T to convert to transmission.
@@ -2955,7 +3042,7 @@ Instructions
 - If spectra are in transmission, press 1 to set the selected windows to one,
   or Shift+1 (or '!') to only do so for values greater than one.
 - Press O to enter and add an offset to the spectra in the selected regions or
-  Shift+O to subtract the current baseline.
+  Shift+O to add the current baseline as an offset.
 - Press U to perform the union of all spectra into a single spectrum. Press
   Shift+U to perform the sum of all the spectra into a single spectrum.
 - Press E to import a baseline from an external file.
@@ -2968,9 +3055,10 @@ Instructions
   integrate the selected spectrum in the current window, or Shift+I to
   introduce a band strength and integrate the column density. If you also press
   Ctrl, the integration will be performed over the previously fitted Gaussians.
-- Press F to multiply the selected regions by the specified factor, or Shift+F
-  to convert from absorbance to absorption coefficient or viceversa (using the
-  input column density).
+- Press F to multiply the selected regions by the specified factor. Press
+  Shift+F to convert from absorbance to absorption coefficient or viceversa
+  (using the input column density), or from transmittance to spectral flux
+  density (using the current baseline).
 - Press ',' or Shift+',' (or ';') to resample the spectra to the given array
   (simple or precise method, respectively).
 - If there is more than one spectrum, press J to activate the individual
