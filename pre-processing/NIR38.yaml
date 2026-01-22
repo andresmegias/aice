@@ -19,7 +19,7 @@ merging:
     show signal-to-noise: yes
     show spectral spacing: yes
     show resolving power: yes
-    new spectral range (/cm): [4001, 480, 2]
+    # new spectral range (/cm): [4001, 480, 2]
     colors:
         NIRCam: 'brown'
         NIRSpec: 'lightcoral'
