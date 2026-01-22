@@ -1,19 +1,22 @@
 parent folder: '../spectra/astro/J110621'
-figure size: [8., 7.]  # [6., 7.]
       
 merging:
     input files:
         NIRSpec:
             file: 'J110621_JWST_NIRSpec_FS_spectrum_McClure23.txt'
-            wavenumber range (/cm): [3650, 1890]
-            wavenumber gaps (/cm): [[2621.5, 2553.5]]
+            spectral range (/cm): [3650., 1890.]
         MIRI:
             file: 'J110621_JWST_MIRI_LRS_FS_spectrum_McClure23.txt'
-            wavenumber range (/cm): [1890, 700]
+            spectral range (/cm): [1890.2, 700.]
     comment character in input files: ';'
-    resample data: no
-    new wavenumber range (/cm): [3700, 700]
-    new resolution (/cm): 1
+    show full original spectra: no
+    flux units: 'mJy'
+    use logarithmic scale for flux: no
+    output spectral variable: 'wavelength'
+    show signal-to-noise: yes
+    show spectral spacing: yes
+    show resolving power: yes
+    new spectral range (/cm): [4001, 480, 2]
     colors:
         NIRSpec: 'lightcoral'
         MIRI: 'tab:brown'
@@ -21,7 +24,7 @@ merging:
 
 continuum fit:
     input file: 'J110621.txt'
-    logarithmic fit: no
+    input spectral variable: 'wavelength'
     fits:
     - continuum file:
           file: 'AV95_localcont_wholerange_v4.dat'
@@ -46,8 +49,9 @@ continuum fit:
     output file: 'J110621-c.txt'
 
 silicate removal:
-    OpTool path: '~/Documents/optool/optool'
+    OpTool path: '~/Applications/optool/optool'
     input file: 'J110621-c.txt'
+    input spectral variable: 'wavenumber'
     silicate file: 'J110621-silicate.csv'
     range (μm): [7.8, 15.0]
     fit regions (μm):

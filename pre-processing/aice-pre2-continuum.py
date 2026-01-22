@@ -64,6 +64,19 @@ print('------------------------------------------')
 print('Pre-processing module 2 - Continuum fit')
 print()
 
+# Default options.
+default_options = {
+    'figure size': (9., 7.),
+    'comment character in input file': '#',
+    'column indices': {'x': 1, 'y': 2, 'y unc.': 3},
+    'input spectral variable': 'wavelength',
+    'output spectral variable': 'wavenumber',
+    'logarithmic fit': False,
+    'fit color': 'palevioletred',
+    'calculate accurate uncertainties': False,
+    'show approximate uncertainties': False
+    }
+
 # Configuration file. 
 config_path = config_file if len(sys.argv) == 1 else sys.argv[1]
 name = config_path.replace('.yaml', '')
@@ -75,25 +88,22 @@ if os.path.isfile(config_path):
         config = yaml.safe_load(file)
 else:
     raise FileNotFoundError('Configuration file not found.')
+config['continuum fit'] = {**default_options, **config['continuum fit']}
 
 # Options.
 folder = config['parent folder'] if 'parent folder' in config else '' 
-figsize = config['figure size'] if 'figure size' in config else (9., 7.)
 options = config['continuum fit']
+figsize = options['figure size']
 input_file = options['input file']
-comment_char = (options['comment character in input file']
-                if 'comment character in input file' in options else '#')
-column_inds = (options['column indices'] if 'column indices' in options
-               else {'x': 1, 'y': 2, 'y unc.': 3})
-spectral_variable = (options['spectral variable'] if 'spectral variable'
-                     in options else 'wavelength (μm)')
-log_fit = options['logarithmic fit'] if 'logarithmic fit' in options else False
-color = options['fit color'] if 'fit color' in options else 'palevioletred'
+comment_char = options['comment character in input file']
+column_inds = options['column indices']
+input_spectral_variable = options['input spectral variable']
+output_spectral_variable = options['output spectral variable']
+log_fit = options['logarithmic fit']
+color = options['fit color']
 fits = options['fits']
-use_accurate_uncs = (options['calculate accurate uncertainties'] if
-                     'calculate accurate uncertainties' in options else True)
-show_approx_uncs = (options['show approximate uncertainties'] if
-                    'show approximate uncertainties' in options else False)
+use_accurate_uncs = options['calculate accurate uncertainties']
+show_approx_uncs = options['show approximate uncertainties']
 output_file = options['output file']
 if not use_accurate_uncs:
     show_approx_uncs = False
@@ -107,7 +117,7 @@ data = np.loadtxt(os.path.join(folder, input_file), comments=comment_char)
 x = data[:,idx_x]
 y = data[:,idx_y]
 dy = data[:, idx_dy] if idx_dy is not None else np.zeros(len(y))
-if spectral_variable == 'wavenumber (/cm)':
+if input_spectral_variable == 'wavenumber':
     x = 1e4 / x
 wavelength = x
 flux = y
@@ -194,8 +204,8 @@ for fit in fits:
 wavenumber_ = wavenumber.copy()
 flux_ = flux.copy()
 flux_unc_ = flux_unc.copy()
-mask = ((wavelength >= cont_wavelength[0])
-        & (wavelength <= cont_wavelength[-1]))
+mask = ((wavelength >= cont_wavelength.min())
+        & (wavelength <= cont_wavelength.max()))
 wavelength = wavelength[mask]
 wavenumber = wavenumber[mask]
 flux = flux[mask]
@@ -204,7 +214,7 @@ cont_wavelength, cont_flux = np.concatenate([*continuous]).transpose()
 inds = np.argsort(cont_wavelength)
 cont_wavelength = cont_wavelength[inds]
 cont_flux = cont_flux[inds]
-mask = (cont_wavelength >= wavelength[0]) & (cont_wavelength <= wavelength[-1])
+mask = (cont_wavelength >= wavelength.min()) & (cont_wavelength <= wavelength.max())
 cont_wavelength = cont_wavelength[mask]
 cont_flux = cont_flux[mask] 
 cont_flux_res = np.interp(wavelength, cont_wavelength, cont_flux)
@@ -236,7 +246,7 @@ if len(all_regions) > 0:
     plt.axvspan(1e4/all_regions[0][0], 1e4/all_regions[0][0], color='gray', alpha=0.1,
                 label='regions of the fit')
 plt.errorbar(wavenumber_, flux_, flux_unc_, fmt='.-', color='black', ecolor='gray',
-             alpha=0.6, ms=1., lw=1.)
+             alpha=0.6, ms=1., lw=1., drawstyle='steps-mid')
 plt.plot(cont_wavenumber, cont_flux, color=color, alpha=0.8,
          zorder=2.5, label='fitted continuum')
 for (x1,x2) in all_regions:
@@ -256,12 +266,13 @@ ax2.set_xlabel('wavelength (μm)', labelpad=6, fontsize=9)
 
 plt.subplot(2,1,2, sharex=ax)
 rv.errorbar(wavenumber, absorbance_rv, fmt='.-', color='black',
-            ecolor='gray', ms=1., lw=1., alpha=0.5)
+            ecolor='gray', ms=1., lw=1., alpha=0.5, drawstyle='steps-mid')
 if show_approx_uncs:
     ylims = plt.ylim()
     optdepth_unc = flux_unc / flux
-    plt.errorbar(wavenumber+3e-4, absorbance,absorbance_unc, fmt='.-',
-                 color='chocolate', ecolor='brown', alpha=0.5, zorder=1.5)
+    plt.errorbar(wavenumber+3e-4, absorbance, absorbance_unc, fmt='.-',
+                 color='chocolate', ecolor='brown', alpha=0.5, zorder=1.5,
+                 drawstyle='steps-mid')
     plt.ylim(ylims)
     plt.errorbar([], [], [], fmt='.', alpha=0.6, color='chocolate',
                  ecolor='brown', label='(approx. uncertainties)')
@@ -298,7 +309,7 @@ if output_file.endswith('.txt') or output_file.endswith('.dat'):
     print(f'Saved absorbance spectrum in {path}.')
 
 if output_file.endswith('.csv'):
-    df = rv.RichDataFrame({'wavelength (μm)': wavelength,
+    df = rv.RichDataFrame({'wavenumber (/cm)': wavenumber,
                            'absorbance': absorbance_rv})
     df.set_params({'num_sf': 3})
     path = os.path.join(folder, output_file)

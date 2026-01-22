@@ -1,22 +1,25 @@
 parent folder: '../spectra/astro/NIR38'
-figure size: [6., 7.]  # [6., 7.]
       
 merging:
     input files:
         NIRCam:
             file: 'NIR38_JWST_NIRCam_WFSS_spectrum_McClure23.txt'
-            wavenumber range (/cm): [4100, 2553]
-            wavenumber gaps (/cm): [[3508.5, 2621.5]]
+            spectral range (/cm): [[4100., 3508.6], [2623.7, 2552.5]]
         NIRSpec:
             file: 'NIR38_JWST_NIRSpec_FS_spectrum_McClure23.txt'
-            wavenumber range (/cm): [3650, 1890]
-            wavenumber gaps (/cm): [[3650., 3508.5], [2621.5, 2553.5]]
+            spectral range (/cm): [3508.6, 1890.5]
         MIRI:
             file: 'NIR38_JWST_MIRI_LRS_FS_spectrum_McClure23.txt'
-            wavenumber range (/cm): [1890, 700]
+            spectral range (/cm): [1890.0, 700.]
     comment character in input files: ';'
-    new wavenumber range (/cm): [4100, 700]
-    resample data: no
+    show full original spectra: no
+    flux units: 'mJy'
+    use logarithmic scale for flux: no
+    output spectral variable: 'wavelength'
+    show signal-to-noise: yes
+    show spectral spacing: yes
+    show resolving power: yes
+    new spectral range (/cm): [4001, 480, 2]
     colors:
         NIRCam: 'brown'
         NIRSpec: 'lightcoral'
@@ -25,6 +28,7 @@ merging:
 
 continuum fit:
     input file: 'NIR38.txt'
+    input spectral variable: 'wavelength'
     fits:
     - continuum file:
         file: 'AV60_localcont_wholerange_v4.dat'
@@ -55,13 +59,14 @@ continuum fit:
 silicate removal:
     OpTool path: '~/Applications/optool/optool'
     input file: 'NIR38-c.txt'
+    input spectral variable: 'wavenumber'
     silicate file: 'NIR38-silicate.csv'
     range (μm): [7.8, 15.0]
     fit regions (μm):
         - [8.3, 8.7]
         - [10.0, 10.4]
     composition:
-        - pyr-mg70 (pyroxene)  # 0.60
-        - ol-mg50 (olivine)  # 0.30
+        - pyr-mg70 (pyroxene): 0.60  # 0.60
+        - ol-mg50 (olivine): 0.30  # 0.30
     grain size (μm): 1.0
     output file: 'NIR38-c-s.txt'

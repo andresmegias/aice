@@ -45,7 +45,20 @@ print('Pre-processing module 3 - Silicate fit')
 time.sleep(0.3)
 print()
 
-# Reading.
+# Default options.
+default_options = {
+    'figure size': (9., 7.),
+    'comment character in input file': '#',
+    'column indices': {'x': 1, 'y': 2, 'y unc.': 3},
+    'input spectral variable': 'wavenumber',
+    'intensity variable': 'absorbance',
+    'silicate file': None,
+    'silicate spectral variable': 'wavelength',
+    'silicate intensity variable': 'optical depth',
+    'fit offset': True
+    }
+
+# Configuration file.
 config_path = config_file if len(sys.argv) == 1 else sys.argv[1]
 name = config_path.replace('.yaml', '')
 config_path = os.path.realpath(config_path)
@@ -56,27 +69,20 @@ if os.path.isfile(config_path):
         config = yaml.safe_load(file)
 else:
     raise FileNotFoundError('Configuration file not found.')
+config['silicate removal'] = {**default_options, **config['silicate removal']}
 
 # Options.
 folder = config['parent folder'] if 'parent folder' in config else ''
-figsize = config['figure size'] if 'figure size' in config else (9., 7.)
 options = config['silicate removal']
+figsize = options['figure size']
 input_file = options['input file']
-comment_char = (options['comment character in input file']
-                if 'comment character in input file' in options else '#')
-column_inds = (options['column indices'] if 'column indices' in options
-               else {'x': 1, 'y': 2, 'y unc.': 3})
-spectral_variable = (options['spectral variable'] if 'spectral variable'
-                     in options else 'wavenumber (/cm)')
-intensity_variable = (options['intensity variable'] if 'intensity variable'
-                      in options else 'absorbance')
-silicate_file = options['silicate file'] if 'silicate file' in options else None
-silicate_spectral_variable = (options['silicate spectral variable']
-            if 'silicate spectral variable' in options else 'wavelength (μm)')
-silicate_intensity_variable = (options['silicate intensity variable']
-                 if 'silicate intensity variable' in options else 'optical depth')
-xrange = options['range (μm)']
-regions = options['fit regions (μm)'] if 'fit regions (μm)' in options else [xrange]
+comment_char = options['comment character in input file']
+column_inds = options['column indices']
+input_spectral_variable = options['input spectral variable']
+intensity_variable = options['intensity variable']
+silicate_file = options['silicate file']
+silicate_spectral_variable = options['silicate spectral variable']
+silicate_intensity_variable = options['silicate intensity variable']
 composition = options['composition']
 grain_size = options['grain size (μm)']
 fit_offset = options['fit offset'] if 'fit offset' in options else True
@@ -100,6 +106,12 @@ for (i, comp_i) in enumerate(composition):
     else:
         composition_labels[comp] = comp
 fit_silicate = True if silicate_file is None else False
+if 'fit regions (μm)' in options:
+    regions = options['fit regions (μm)']
+    use_wavelength = True
+elif 'fit regions (/cm)' in options:
+    regions = options['fit regions (/cm)']
+    use_wavelength = False
     
 #%% Reading and fit.
 
@@ -115,7 +127,7 @@ else:
     x = data[:,idx_x]
     y = data[:,idx_y]
     dy = data[:,idx_dy] if idx_dy is not None else np.zeros(len(y))
-if spectral_variable == 'wavelength (μm)':
+if input_spectral_variable == 'wavelength':
     x = 1e4 / x
 if intensity_variable == 'optical depth':
     y /= np.log(10)
@@ -129,6 +141,14 @@ absorbance = y
 absorbance_uncs = dy
 absorbance_rv = rv.RichArray(absorbance, absorbance_uncs)
 wavelength = 1e4 / wavenumber
+if 'xrange (μm)' in options:
+    xrange = options['xrange (μm)']
+elif 'xrange (/cm)' in options:
+    x1x2 = options['xrange (/cm)']
+    x1, x2 = min(x1x2), max(x1x2)
+    xrange = [1e4 / x2, 1e4 / x1]
+else:
+    xrange = [1e4 / wavenumber[1], 1e4 / wavenumber[0]]
 mask = (wavelength >= xrange[0]) & (wavelength <= xrange[1])
 wavelength_silreg = wavelength[mask]
 absorbance_silreg = absorbance[mask]
@@ -227,8 +247,12 @@ if fit_silicate:
     
     # Silicate fit.
     mask = np.zeros(len(wavelength), bool)
-    for region in regions:
-        mask += (wavelength >= region[0]) & (wavelength <= region[1])
+    for x1x2 in regions:
+        x1, x2 = min(x1x2), max(x1x2)
+        if use_wavelength:
+            mask += (wavelength >= x1) & (wavelength <= x2)
+        else:
+            mask += (wavenumber >= x1) & (wavenumber <= x2)
     wavelength_mask = wavelength[mask]
     params = curve_fit(model, wavelength[mask], absorbance[mask], bounds=bounds)[0]
     fitted_sf = params[0]
@@ -297,7 +321,7 @@ plt.axvspan(wavenumber_[-1], wavenumber_[-1], color='gray', alpha=0.1,
 plt.plot(sil_wavenumber, sil_absorbance, color='chocolate', alpha=0.8,
          zorder=3., label='fitted silicate')
 rv.errorbar(wavenumber_, absorbance_rv, fmt='.-', alpha=0.6, color='black',
-            ecolor='gray', ms=1., lw=1.)
+            ecolor='gray', ms=1., lw=1., drawstyle='steps-mid')
 for (x1,x2) in regions:
     for (fc, ec) in zip(['gray', 'none'], ['none', 'gray']):
         plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)
@@ -320,7 +344,7 @@ plt.legend(fontsize='small', loc='lower right')
 
 plt.subplot(2,1,2, sharex=ax)
 rv.errorbar(wavenumber, absorbance_corr_rv/np.log(10), fmt='.-', ms=1., lw=1.,
-            color='black', ecolor='gray', alpha=0.6)
+            color='black', ecolor='gray', alpha=0.6, drawstyle='steps-mid')
 for (x1,x2) in regions:
     for (fc, ec) in zip(['gray', 'none'], ['none', 'gray']):
         plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)
