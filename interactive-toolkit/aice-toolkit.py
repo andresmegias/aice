@@ -12,12 +12,12 @@ Andrés Megías.
 # AICE parameters.
 aice_labels = ['temp. (K)', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
 weights_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice-weights.npy'
-aice_xrange_params = [980, 4001., 1.]  # /cm
-aice_resolution = 1.  # /cm
+aice_xrange_params = [980, 3751., 1.]  # /cm
+aice_resolution = 2.  # /cm
 # Matplotlib backend.
 backend = 'qtagg'
 # Graphical options.
-colors = {'edited': 'cornflowerblue', 'baseline': 'darkorange',
+colors = {'edited': 'darkslateblue', 'baseline': 'darkorange',
           'selected-points': 'crimson', 'lines': 'tab:red'}
 colormaps = {'original': {'name': 'brg', 'offset': 0.0, 'scale': 0.5},
              'edited': {'name': 'viridis', 'offset': 0.4, 'scale': 0.6}}
@@ -318,6 +318,7 @@ def compute_noise(spectra):
 def parse_composition(text, folder):
     """Parse input text as containing species."""
     species_list = []
+    text = text.replace(' ', '')
     if '{' in text:
         if 'phase_' in folder:
             pos = folder.index('phase_')
@@ -337,7 +338,7 @@ def parse_composition(text, folder):
         species_list = text.split(',')
     else:
         species_list = [text]
-    species_list = [name.split('.')[0] for name in species_list]
+    species_list = np.array([name.split('.')[0] for name in species_list], str)
     return species_list
 
 def aice_model(wavenumber, absorbance, wavenumber_aice, weights):
@@ -666,7 +667,7 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     if 'y-lines' in spectrum:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
         y = spectrum['y-lines'] * factor
-        plt.plot(x, y, linestyle='-', lw=0.9*dlw, zorder=2.9, drawstyle=ds,
+        plt.plot(x, y, linestyle='-', lw=0.9*dlw, zorder=3.0, drawstyle=ds,
                  color=colors['lines'], label='fitted lines')
     if spectrum['edited']:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
@@ -675,16 +676,15 @@ def plot_data(spectra, spectra_old, active_indices, idx,
         if y_unc is not None:
             y_unc *= factor
         plt.errorbar(x, y, y_unc, color=colors['edited'], ecolor='gray',
-                     drawstyle=ds, lw=0.8*dlw, zorder=2.8,
-                     label='edited spectrum')
+                     drawstyle=ds, lw=0.8*dlw, zorder=2.8, label='edited spectrum')
     for i in all_indices:
         if i == idx or i not in active_indices:
             continue
+        spectrum = spectra[i]
         if i in active_indices:
             color = spectra_colors[i] if spectrum['edited'] else spectra_colors_old[i]
         else:
             color = 'gray'
-        spectrum = spectra[i]
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
         y = spectrum['y'] * factor
         plt.plot(x, y, color=color, drawstyle=ds, lw=0.8*dlw,
@@ -722,8 +722,9 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     ax = plt.gca()
     if use_logscale:
         yy = np.concatenate([spectrum['y'] for spectrum in spectra])
+        yy = yy[np.isfinite(yy)]
         linthresh = (1e3*np.min(np.abs(yy[yy>0])) if 'abs' not in variable_y
-                     else 5*noise_level)
+                     else 100*noise_level)
         linthresh = min(0.3*np.max(yy), linthresh)
         if 'abs' in variable_y:
             linthresh = max(0.04*np.max(yy), linthresh)
@@ -762,11 +763,14 @@ def plot_data(spectra, spectra_old, active_indices, idx,
                    10, 12, 15, 20, 30, 50, 300] # μm
         xlabel2 = 'wavelength (μm)'
     else:
-        xticks2 = [20000, 10000, 8000, 6000, 5000,
+        xticks2 = [20000, 10000, 6000,
                    4000, 3000, 2500, 2000, 1500, 1200,
                    1000, 800, 700, 600, 500,
                    400, 350, 300, 250, 200, 150, 120,
                    100, 90, 80, 70, 60, 50, 45, 40, 35, 30]
+        if x_lims[0] < 3. and x_lims[1] > 6.:
+            for x in [20000, 6000, 3000, 2500]:
+                xticks2.remove(x)
         xlabel2 = 'wavenumber (cm$^{-1}$)'
     ax2.set_xticks(xticks2, xticks2)
     ax2.set_xlabel(xlabel2, labelpad=6., fontsize=9.)
@@ -943,9 +947,35 @@ def gaussian(x, mean=0, std=1, height=1, ssf=1):
         y = y_.reshape(-1, ssf).mean(axis=1)
     return y
 
+def add_gaussian(spectra, active_indices, windows, params):
+    """Add a Gaussian line to the spectra with the given parameters."""
+    for j in active_indices:
+        spectrum = spectra[j]
+        x = spectrum['x']
+        y_lines = (np.nan_to_num(spectrum['y-lines'], nan=0.)
+                   if 'y-lines' in spectrum else np.zeros(len(x)))
+        mask = np.zeros(len(x), bool)
+        for (x1, x2) in windows:
+            mask |= (x >= x1) & (x <= x2)
+        x_ = x[mask]
+        mean, width, height = params
+        ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
+        y_lines[mask] += gaussian(x_, mean, width, height, ssf)
+        y_lines[y_lines==0.] = np.nan
+        spectra[j]['y-lines'] = y_lines
+
 def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
     """Fit Gaussians to given spectra in the current windows."""
+    global use_microns
     fix_center = False if center is None else True
+    ft = 'f' if variable_y == 'absorbance' else 'e'
+    if use_microns:
+        nd = 3
+        units1 = '(μm)'
+    else:
+        nd = 1
+        units1 = '(/cm)'
+    units2 = '' if variable_y == 'absorbance' else ' (cm2)'
     for j in active_indices:
         if not fix_center:
             center = None
@@ -975,12 +1005,12 @@ def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
             x2 = min(x2, x2w)
         else:
             x1, x2 = x_[0], x_[-1]
-            y1, y2 = (y_[0], y_[-1]) if line_borders != 0 else (0, 0)
+            y1, y2 = (y_[0], y_[-1]) if line_borders != 0 else (0., 0.)
         baseline = lambda x: y1 + (y2 - y1) / (x2 - x1) * (x - x1)
-        y_b = baseline(x_) + y_lines_
+        y_r = y_ - baseline(x_) - y_lines_
         xrange = x2 - x1
         width = xrange / 4
-        height = np.max(y_)
+        height = np.max(y_r)
         ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
         if center is None:
             center = np.mean(x_)
@@ -991,23 +1021,19 @@ def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
             guess = [width, height]
             m = center
             function = lambda x,s,h: gaussian(x, m, s, h, ssf)
-        fit_params = scipy.optimize.curve_fit(function, x_, y_-y_b, p0=guess,
-                                              bounds=bounds)[0]
+            bounds = [[0., 0.], [5*xrange, 40*height]]
+        scale = np.mean(y_r)
+        fit_params = scipy.optimize.curve_fit(function, x_, y_r, p0=guess,
+                                              bounds=bounds, sigma=scale)[0]
         if not fix_center:
             center, width, height = fit_params
         else:
             width, height = fit_params
         if use_microns:
-            width = 1e3 * (1e4 / (center - width/2) - 1e4 / (center + width/2))
+            width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
             center = 1e4 / center
-            nd = 3
-            units1 = '(μm)'
-            units2 = '(nm)'
-        else:
-            nd = 1
-            units1 = units2 = '(/cm)'
         print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
-              f'width {units2}, {width:.1f}; height, {height:.2f}.')
+              f'width {units1}, {width:.{nd}f}; height{units2}, {height:.2{ft}}.')
         y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
                    else np.full(len(x), np.nan))
         y_lines = np.nan_to_num(y_lines, nan=0.)
@@ -1076,20 +1102,22 @@ def multigaussian_fit(x, y, num_curves=1, ssf=1, centers=None, max_iters=10,
     mean = np.mean(x)
     std = xrange / 4
     means = np.random.uniform(x1, x2, num_curves)
-    fixed_num_curves = False if centers is None else True
-    guess, bounds_inf, bounds_sup, fix_centers = [], [], [], []
+    fix_num_curves = False if centers is None else True
+    guess, bounds_inf, bounds_sup = [], [], []
     for i in range(num_curves):
-        mean = centers[i] if fix_centers else means[i]
+        fix_center = False if not fix_num_curves or centers[i] is None else True
+        mean = centers[i] if fix_center else means[i]
         guess += [mean, std, height]
-        bound_mean_inf = x1 if not fix_centers else mean - 0.01*std
-        bound_mean_sup = x2 if not fix_centers else mean + 0.01*std
+        bound_mean_inf = x1 if not fix_center else mean - 0.01*std
+        bound_mean_sup = x2 if not fix_center else mean + 0.01*std
         bounds_inf += [bound_mean_inf, 0., 0.]
         bounds_sup += [bound_mean_sup, 5*xrange, 40*height]
     bounds = (bounds_inf, bounds_sup)
+    scale = np.nanmean(y)
     # Fit.
     multigaussian_ = lambda x,*params: gaussians(x, ssf, *params) 
     popt, pcov = scipy.optimize.curve_fit(multigaussian_, x, y, p0=guess,
-                                          bounds=bounds)
+                                          bounds=bounds, sigma=scale)
     # Coefficient of determination.    
     res = y - multigaussian_(x, *popt)
     ss_res = np.sum(res**2)
@@ -1103,7 +1131,7 @@ def multigaussian_fit(x, y, num_curves=1, ssf=1, centers=None, max_iters=10,
             print('Returning to previous fit. Finished.')
         return old_results
     # Condition for finishing or adding another curve.
-    if not fixed_num_curves:
+    if not fix_num_curves:
         if r2 > 0.99 or max_iters == 1:
             if verbose:
                 print('Finished.')
@@ -1121,6 +1149,14 @@ def fit_gaussians(spectra, active_indices, windows, line_borders,
                   centers=None):
     """Fit Gaussians to given spectra in the current windows."""
     global use_microns
+    ft = 'f' if variable_y == 'absorbance' else 'e'
+    if use_microns:
+        nd = 3
+        units1 = '(μm)'
+    else:
+        nd = 1
+        units1 = '(/cm)'
+    units2 = '' if variable_y == 'absorbance' else ' (cm2)'
     for j in active_indices:
         spectrum = spectra[j]
         x = spectrum['x']
@@ -1147,15 +1183,14 @@ def fit_gaussians(spectra, active_indices, windows, line_borders,
             x1 = max(x1, x1w)
             x2 = min(x2, x2w)
         else:
-            y_b = np.zeros(len(x_))
             x1, x2 = x_[0], x_[-1]
             y1, y2 = (y_[0], y_[-1]) if line_borders != 0. else (0., 0.)
         baseline = lambda x: y1 + (y2 - y1) / (x2 - x1) * (x - x1)
-        y_b = baseline(x_) + y_lines_
+        y_r = y_ - baseline(x_) - y_lines_
         ssf = round(max(1., 10. - 9/25 * (len(x_)-1.)))
         function = lambda x,*args: gaussians(x, ssf, *args)
         num_curves = len(centers) if centers is not None else 1
-        fit_params = multigaussian_fit(x_, y_-y_b, num_curves, ssf, centers,
+        fit_params = multigaussian_fit(x_, y_r, num_curves, ssf, centers,
                                        verbose=False)[0]
         edges = []
         print('Gaussians parameters:')
@@ -1163,16 +1198,10 @@ def fit_gaussians(spectra, active_indices, windows, line_borders,
             center, width, height = fit_params[i:i+3]
             edges += [[center - 4*width, center + 4*width]]
             if use_microns:
-                width = 1e3 * (1e4 / (center - width/2) - 1e4 / (center + width/2))
+                width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
                 center = 1e4 / center
-                nd = 3
-                units1 = '(μm)'
-                units2 = '(nm)'
-            else:
-                nd = 1
-                units1 = units2 = '(/cm)'
             print(f'- center {units1}, {center:.{nd}f}; '
-                  f'width {units2}, {width:.1f}; height, {height:.2f}.')
+                  f'width {units1}, {width:.{nd}f}; height{units2}, {height:.2{ft}}.')
         y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
                    else np.full(len(x), np.nan))
         y_lines = np.nan_to_num(y_lines, nan=0.)
@@ -1180,8 +1209,7 @@ def fit_gaussians(spectra, active_indices, windows, line_borders,
         x2 = max(x2, np.max(edges))
         mask = (x >= x1) & (x <= x2)
         x_ = x[mask]
-        y_b = baseline(x_)
-        y_f = function(x_, *fit_params) + y_b
+        y_f = function(x_, *fit_params) + baseline(x_)
         y_lines[mask] += y_f
         y_lines[y_lines == 0.] = np.nan
         spectra[j]['y-lines'] = y_lines
@@ -1400,7 +1428,6 @@ def compute_absorbance(spectra):
             y_new = -np.log10(y)
             y_unc_new = (np.abs(y_unc / y) / np.log(10)
                          if y_unc is not None else None)
-            spectra[i]['edited'] = True
             spectra[i]['y'] = y_new
             spectra[i]['y-unc'] = y_unc_new
             if 'y-base' in spectrum:
@@ -1415,7 +1442,6 @@ def compute_transmittance(spectra):
             y_new = 10**(-y)
             y_unc_new = (y_new * np.log(10) * y_unc
                          if y_unc is not None else None)
-            spectra[i]['edited'] = True
             spectra[i]['y'] = y_new
             spectra[i]['y-unc'] = y_unc_new
             if 'y-base' in spectrum:
@@ -1431,7 +1457,7 @@ def integrate_spectrum(spectrum, selected_points, factor=1., borders=None,
     x = spectrum['x']
     y = (spectrum['y-lines'] if integrate_fitted_lines and 'y-lines' in spectrum
          else spectrum['y'])
-    if borders is None:
+    if borders in (0, None):
         x1 = np.min(windows)
         x2 = np.max(windows)
     else:
@@ -1442,8 +1468,8 @@ def integrate_spectrum(spectrum, selected_points, factor=1., borders=None,
     mask = (x >= x1) & (x <= x2) & np.isfinite(y)
     x_ = x[mask]
     y_ = y[mask]
-    if borders is None:
-        y1, y2 = y_[0], y_[-1]
+    if borders in (0, None):
+        y1, y2 = (y_[0], y_[-1]) if borders is None else (0., 0.)
     y_b = y1 + (y2 - y1) / (x2 - x1) * (x_ - x1)
     y_ -= y_b
     area = 0.
@@ -1641,7 +1667,7 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         elif saved_var == 'lines':
             yvar = 'y-lines'
             extra_text = ' (fitted lines)'
-    global original_folder, columns, variable_y, use_csv_format_for_input
+    global working_folder, columns, variable_y
     spectra_names_active_indices = np.array(spectra_names)[active_indices]
     nonedited_spectra = [not spectra[i]['edited'] for i in active_indices]
     if all(nonedited_spectra):
@@ -1653,10 +1679,11 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         return None, None
     if filename.endswith(' '):
         filename = filename[:-1]
-    if filename in ('same', '*', '') and len(original_filenames) == 1:
+    num_original_files = len(original_filenames)
+    if filename in ('same', '*') and num_original_files == 1:
         filename = original_filenames[0]
-    elif '*' in filename or filename == '':
-        if use_csv_format_for_input:
+    elif '*' in filename:
+        if num_original_files == 1 and '.csv' in original_filenames[0]:
             default_filename = original_filenames[0]
         else:
             default_filename = os.path.commonprefix(spectra_names_active_indices)
@@ -1667,38 +1694,54 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
     if (num_spectra > 1 or num_spectra == 1 and filename.endswith('.csv')
             or '.' not in filename):
         use_csv_format_for_output = True
+        if num_spectra > 1:
+            extension = '.' + filename.split('.')[-1] if '.' in filename else ''
+            if ' ' in extension:
+                extension = ''
+            if extension not in ('', '.csv'):
+                filename = filename.replace(extension, '')
+                print('Warning: Multiple spectra will always be saved as a .csv file.')
     else:
         use_csv_format_for_output = False
     variable_x_ = 'wavelength (μm)' if use_microns else 'wavenumber (/cm)'
+    if variable_y == 'absorbance' and use_optical_depth:
+        variable_y = 'optical depth'
+    abbreviations = {'spectral flux density': 'flux dens.',
+                     'transmittance': 'transm.',
+                     'absorbance': 'abs.', 'optical depth': 'opt. depth',
+                     'absorption coefficient (cm2)': 'abs. coeff. (cm2)'}
     if use_csv_format_for_output:
-        if use_csv_format_for_input:
-            columns = np.array(columns)[active_indices].tolist()
-        else:
-            columns = spectra_names_active_indices.tolist()
-            columns = ['.'.join(column.split('.')[:-1]) for column in columns]
-            columns = [f'{variable_y} {column}' for column in columns]
-        for (i, column) in enumerate(columns):
-            column = (column.replace('transmittance', 'transm.')
-                      .replace('absorbance', 'abs.')
-                      .replace('optical depth', 'opt. depth'))
-            if variable_y == 'absorbance' and use_optical_depth:
-                column = column.replace('abs.', 'opt. depth')
-            if 'coefficient' in variable_y:
-                column = column.replace('abs.', 'abs. coeff. (cm2)')
-            columns[i] = column
         if not filename.endswith('.csv'):
             filename += '.csv'
-        xx = [spectrum['x'] for spectrum in selected_spectra]
+        if num_original_files == 1 and '.csv' in original_filenames[0]:
+            columns = np.array(columns)[active_indices].tolist()
+            for (i, name) in enumerate(columns):
+                if name[-1] == 'K' and len(name) > 2 and name[-2].isdigit():
+                    name = name[:-1] + ' K'
+        else:
+            columns = spectra_names_active_indices.tolist()
+            for (i, name) in enumerate(columns):
+                name = name.replace(' - ', ' ')
+                variable_y_short = abbreviations[variable_y]
+                name = name.replace(variable_y, variable_y_short)
+                if variable_y_short not in name:
+                    if name.endswith(' K'):
+                        name = variable_y_short + ' ' + name
+                    else:
+                        name = name + ' ' + variable_y_short
+                columns[i] = name
+        xx = np.concatenate([spectrum['x'] for spectrum in selected_spectra])
         x = np.unique(xx)
         if use_microns:
-            x = 1e4/x
+            x = 1e4/x[::-1]
         new_df = pd.DataFrame({variable_x_: x})
-        for (i,spectrum) in enumerate(selected_spectra):
+        for (i, spectrum) in enumerate(selected_spectra):
             column = columns[i]
             x_i = spectrum['x']
             y_i = spectrum[yvar]
             if use_microns:
-                x_i = 1e4/x_i
+                x_i = 1e4/x_i[::-1]
+                y_i = y_i[::-1]
             if variable_y == 'absorbance' and use_optical_depth:
                 y_i *= np.log(10)
             y_i = np.interp(x, x_i, y_i)
@@ -1717,29 +1760,27 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         x = spectrum['x']
         y = spectrum[yvar]
         y_unc = spectrum['y-unc'] if yvar == 'y' else None
-        variable_x_ = variable_x_.replace(' ', '_')
-        variable_y_ = variable_y.replace(' ', '_')
         if variable_y == 'absorbance' and use_optical_depth:
             y *= np.log(10)
             if y_unc is not None:
                 y_unc *= np.log(10)
             variable_y_ = 'optical_depth'
-        if 'coefficient' in variable_y:
-            variable_y_ = 'abs._coeff._(cm2)'
         if use_microns:
             x = 1e4/x
+        variable_x_ = variable_x_.replace(' ', '_')
+        variable_y_ = variable_y.replace(' ', '_')
         data = np.array([x, y]).T if y_unc is None else np.array([x, y, y_unc]).T 
         inds = np.argsort(x)
         data = data[inds]
         nd = max([len(xi.split('.')[-1]) if '.' in xi else 0
                   for xi in x.astype(str)])
         fmt = f'%.{nd}f %.3e' if y_unc is None else f'%.{nd}f %.3e %.3e'
-        header = f' {variable_x_} {variable_y_}'
-        if y_unc is  not None:
+        header = f'{variable_x_} {variable_y_}'
+        if y_unc is not None:
             if '(' not in variable_y:
                 header += f' {variable_y_}_unc.'
             else:
-                variable, units = variable_y_.split('(')
+                variable, units = variable_y_.split('_(')
                 units = units[:-1]
                 header += f' {variable}_unc._({units})'
         np.savetxt(filename, data, fmt=fmt, header=header)
@@ -1830,7 +1871,7 @@ def click2(event):
         global click_time, use_microns
         elapsed_click_time = time.time() - click_time
         x = event.xdata
-        if use_microns:
+        if use_microns and x is not None:
             x = 1e4/x
         if (elapsed_click_time > 0.5  # s
                 or x is None or x is not None and not np.isfinite(x)):
@@ -1995,6 +2036,8 @@ def press_key(event):
         elif event.key == '0':
             click_action_options['clicked_borders'] = 0
             event.key = click_action_options['key']
+        else:
+            return
     elif event.key == 'escape':
         plt.close(1)
         return
@@ -2062,6 +2105,10 @@ def press_key(event):
                 in_edge = x_lims[1] > 300. if use_microns else x_lims[0] < 0.
                 if not in_edge:
                     x_lims = [x_lims[0] + s * x_range/6, x_lims[1] + s * x_range/6]
+            lim = 0.1 if use_microns else 10.
+            diff = x_lims[0] < lim
+            if diff:
+                x_lims = [lim, x_lims[1] - (x_lims[0] - lim)]
     elif event.key in ('up', 'down'):
         if len(spectra) > 1:
             idx = idx+1 if event.key == 'up' else idx-1
@@ -2098,6 +2145,8 @@ def press_key(event):
             del spectra[idx]
             del spectra_old[idx]
             del spectra_names[idx]
+            del spectra_colors[idx]
+            del spectra_colors_old[idx]
             idx = max(0, idx-1)
             all_indices = list(range(len(spectra)))
             active_indices = (copy.copy(all_indices) if using_joint_editing_mode
@@ -2106,36 +2155,75 @@ def press_key(event):
                 action_info['current selected spectrum'] = spectra_names[idx]
     elif event.key in ('w', 'W', 'ctrl+w'):
         if event.key == 'ctrl+w':
-            text = custom_input('- Write new window (/cm): ', 'Add window')
+            units = '(μm)' if use_microns else '(/cm)'
+            text = custom_input(f'- Write new window {units}: ', 'Add window')
             text = (text.replace('(','').replace(')','')
                     .replace('[','').replace(']','').replace(', ',','))
             x1, x2 = text.split(',')
             x1x2 = [float(x1), float(x2)]
             x1, x2 = min(x1x2), max(x1x2)
+            if use_microns:
+                x1, x2 = [1e4/x2, 1e4/x1]
             selected_points += [x1, x2]
         else:
             if not in_macro or in_macro and windows == 'auto':
-                global original_folder
-                text = (spectra_names[idx] if event.key == 'w'
-                        else custom_input('- Write species to mask: '), 'Add windows')
-                species_list = parse_composition(text, original_folder)
-                x = spectra[idx]['x']
-                if len(selected_points) == 0:
-                    mask = np.zeros(len(x), bool)
+                global working_folder
+                if event.key == 'w':
+                    text = spectra_names[idx]
+                    try:
+                        species_list = parse_composition(text, working_folder)
+                    except:
+                        print('Error: Could not identify species from file name.'
+                              ' Press Shift+W to introduce a species to mask.')
+                        species_list = None
+                    if len(species_list) == 0:
+                        species_list = None       
+                    else:
+                        species_text = ', '.join(species_list)
+                        print('Automatically read species from file name:'
+                              f' {species_text}.')
                 else:
-                    previous_windows = get_windows_from_points(selected_points)
-                    mask = ~get_mask_from_windows(previous_windows, x)
-                for species in species_list:
-                    if species in species_windows:
-                        for x1x2 in species_windows[species]:
-                            x1, x2 = min(x1x2), max(x1x2)
-                            mask |= (x >= x1) & (x <= x2)
-                windows = get_windows_from_mask(~mask, x)
-                selected_points = list(np.array(windows).flatten()[::-1])
-        print('Modified windows.')
-        windows = get_windows_from_points(selected_points)
-        windows_text = get_windows_text(windows)
-        action_info = {'action': 'modify windows', 'windows': windows_text}
+                    text = custom_input('- Write species to mask: ', 'Add windows')
+                    species_list = parse_composition(text, working_folder)
+                if species_list is not None:
+                    are_species_in_list = np.array([name in species_windows
+                                                for name in species_list], bool)
+                    introduced_read = 'Introduced' if event.key == 'W' else 'Read'
+                    species_text = ', '.join(species_list)
+                    is_are = 'is' if len(species_list) == 1 else 'are'
+                    if not any(are_species_in_list):
+                        print(f'Error: {introduced_read} species ({species_text})'
+                              f' {is_are} not in the list of predefined spectral'
+                              ' windows. Press Ctrl+W to manually introduce them.')
+                        return
+                    elif event.key == 'W':
+                        print(f'Introduced species to mask: {species_text}.')
+                    if not all(are_species_in_list):
+                        species_ = species_list[~are_species_in_list]
+                        text = ', '.join(species_)
+                        if len(species_) > 1:
+                            species_text = ' and'.join(text.rsplit(',', 1))
+                        print(f'Warning: {introduced_read} species {species_text}'
+                              f' {is_are} not in the list of predefined spectral'
+                              ' windows.')
+                    x = spectra[idx]['x']
+                    if len(selected_points) == 0:
+                        mask = np.zeros(len(x), bool)
+                    else:
+                        previous_windows = get_windows_from_points(selected_points)
+                        mask = ~get_mask_from_windows(previous_windows, x)
+                    for species in species_list:
+                        if species in species_windows:
+                            for x1x2 in species_windows[species]:
+                                x1, x2 = min(x1x2), max(x1x2)
+                                mask |= (x >= x1) & (x <= x2)
+                    windows = get_windows_from_mask(~mask, x)
+                    selected_points = list(np.array(windows).flatten()[::-1])
+        if event.key == 'ctrl+w' or species_list is not None:
+            print('Modified windows.')
+            windows = get_windows_from_points(selected_points)
+            windows_text = get_windows_text(windows)
+            action_info = {'action': 'modify windows', 'windows': windows_text}
     elif event.key in ('s', 'S', 'ctrl+s', 'ctrl+S'):
         if not in_macro:
             factor = copy.copy(smooth_size)
@@ -2231,7 +2319,7 @@ def press_key(event):
             return
         else:
             lines_in_spectra = ['y-lines' in spectra[i] for i in active_indices]
-            if not all(lines_in_spectra):
+            if event.key == 'R' and not all(lines_in_spectra):
                 if using_joint_editing_mode:
                     print('Error: Not all specra have fitted lines.')
                 else:
@@ -2324,11 +2412,11 @@ def press_key(event):
                 points_text = get_points_text(selected_points)
                 action_info = {'action': 'add baseline offset',
                                'points': points_text}
-    elif event.key in ('g', 'G', 'ctrl+g', 'ctrl+G'):
+    elif event.key in ('g', 'G', 'ctrl+g', 'ctrl+G', 'cmd+g', 'alt+g'):
         if 'abs' not in variable_y:
-            print('Error: Cannot fit a Gaussian in flux mode.')
+            print('Error: Cannot fit/add Gaussians in flux mode.')
         elif len(selected_points) < 2:
-            print('Error: You must select a window where to fit a Gaussian.')
+            print('Error: You must select a window where to fit/add Gaussians.')
         else:
             windows = get_windows_from_points(selected_points)
             if not waiting_for_click:
@@ -2345,10 +2433,14 @@ def press_key(event):
                             centers[i] = float(x)
                 else:
                     centers = None
-                if 'ctrl' in event.key:
+                if event.key in ('g', 'G'):
+                    fit_function = fit_gaussian
+                    if centers is not None:
+                        centers = centers[0]
+                elif event.key in ('ctrl+g', 'ctrl+G'):
                     fit_function = fit_gaussians
                 else:
-                    fit_function = fit_gaussian
+                    fit_function = None
                 print('Click two reference points for the line borders'
                       ' (press Enter to skip).')
                 click_action_options = {'key': event.key, 'centers': centers,
@@ -2358,19 +2450,49 @@ def press_key(event):
                 clicked_borders = click_action_options['clicked_borders']
                 if clicked_borders in (0, None) or len(clicked_borders) == 2:
                     waiting_for_click = False
-                    centers = click_action_options['centers']
-                    fit_function = click_action_options['fit_function']
-                    fit_function(spectra, active_indices, windows, clicked_borders,
-                                 centers)
-                    windows_text = get_windows_text(windows)
-                    action_info = {'action': 'fit line', 'windows': windows_text}
-                    if clicked_borders not in (0, None):
-                        x1, y1 = clicked_borders[0]
-                        x2, y2 = clicked_borders[1]
-                        line_borders_text = (f'({x1:.3f}), ({y1:.3f});'
-                                             ' ({x2:.3f}), ({y2:.3f})')
-                        action_info['line borders'] = line_borders_text
-                    action_info['centers'] = centers
+                    if event.key in ('cmd+g', 'alt+g'):
+                        key = '+'.join([x.capitalize() for x in event.key.split('+')])
+                        units = '(μm)' if use_microns else '(/cm)'
+                        text = custom_input(f'- Enter the center {units}, width {units} and'
+                                            ' height of the Gaussian: ', f'Add Gaussian ({key})')
+                        if text == '':
+                            return
+                        params = np.array(text.replace(' ', '').split(','), float)
+                        center, width, height = params
+                        if use_microns:
+                            width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
+                            center = 1e4 / center
+                        if use_optical_depth:
+                            height /= np.log(10) 
+                        add_gaussian(spectra, active_indices, windows,
+                                     [center, width, height])
+                        center, width, height = params
+                        if use_microns:
+                            nd = 3
+                            units1 = '(μm)'
+                        else:
+                            nd = 1
+                            units1 = '(/cm)'
+                        units2 = '' if variable_y == 'absorbance' else ' (cm2)'
+                        ft = 'f' if variable_y == 'absorbance' else 'e'
+                        print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
+                              f'width {units1}, {width:.{nd}f}; height{units2}, {height:.2{ft}}.')
+                        action_info = {'action': 'add Gaussian', 'center (/cm)': center,
+                                       'width (/cm)': width, 'height': height}
+                    else:
+                        centers = click_action_options['centers']
+                        fit_function = click_action_options['fit_function']
+                        fit_function(spectra, active_indices, windows, clicked_borders,
+                                     centers)
+                        windows_text = get_windows_text(windows)
+                        action_info = {'action': 'fit line', 'windows': windows_text}
+                        if clicked_borders not in (0, None):
+                            x1, y1 = clicked_borders[0]
+                            x2, y2 = clicked_borders[1]
+                            line_borders_text = (f'({x1:.3f}), ({y1:.3f});'
+                                                 ' ({x2:.3f}), ({y2:.3f})')
+                            action_info['line borders'] = line_borders_text
+                        action_info['centers'] = centers
     elif event.key == 'alt+tab':
         windows = get_windows_from_points(selected_points)
         remove_fitted_lines(spectra, active_indices, windows)
@@ -2424,7 +2546,11 @@ def press_key(event):
         if event.key in ('f', 'ctrl+f'):
             text = custom_input('- Enter factor to multiply: ', 'Multiply (F)')
             if not in_macro:
-                factor = 1. if text == '' else float(text)
+                try:
+                    factor = eval(text, {'__builtins__': {}})
+                except:
+                    print('Error: Invalid input.')
+                    return
             if factor != 1.:
                 multiply_lines = event.key == 'ctrl+f'
                 multiply_spectra(spectra, active_indices, selected_points,
@@ -2534,8 +2660,6 @@ def press_key(event):
         idx = 0
         print('Summed up all spectra.')
         action_info = {'action': 'sum of spectra'}
-    elif event.key == 'ctrl+g':
-        1
     elif event.key in ('e', 'E'):
         text = custom_input('- Write the path of the baseline file: ',
                             'Load external baseline (E)')
@@ -2763,7 +2887,8 @@ def press_key(event):
                      'r', 'R', 'a', 't', 'd', 'u', 'U', 'e', 'E', ',', ';',
                      'n', 'N', 'o', 'O', 'f', 'ctrl+f', 'F', '0', '=', '1', '!',
                      'ctrl+c', 'cmd+c', 'ctrl+C', 'cmd+C', 'ctrl+v', 'cmd+v',
-                     'w', 'W', 'ctrl+W', 'g', 'G', 'ctrl+g', 'ctrl+G', '.', 'j',
+                     'g', 'G', 'ctrl+g', 'ctrl+G', 'cmd+g', 'alt+g',
+                     'w', 'W', 'ctrl+W', '.', 'j',
                      'up', 'down', 'tab', 'alt+tab', 'backspace'):
         if action_info is None:
             pass
@@ -2822,7 +2947,7 @@ except:
 # Reading of the arguments.
 variable_y = 'absorbance'
 use_optical_depth = False
-input_in_microns = False
+use_microns = False
 args = copy.copy(sys.argv)
 i = 0
 while i < len(args):
@@ -2874,82 +2999,89 @@ input_variable_y = copy.copy(variable_y)
 #%% Reading of the data files.
 
 # Identification of files.
-filenames = np.array([path.split(sep)[-1] for path in filepaths])
-folders = np.unique([sep.join(path.split(sep)[:-1]) for path in filepaths])
-working_folder = folders[0] if folders[0] != '' else os.getcwd()
+filenames = [path.split(sep)[-1] for path in filepaths]
+folders = [sep.join(path.split(sep)[:-1]) for path in filepaths]
+working_folder = (folders[0] if len(set(folders)) == 1 and folders[0] != ''
+                  else os.getcwd())
+folders_new, filenames_new = np.array([], str), np.array([], str)
+for (folder, filename) in zip(folders, filenames):
+    if folder == '':
+        folder = working_folder
+    else:
+        os.chdir(folder)
+    filenames_i = list([str(pp) for pp in pathlib.Path('.').glob(filename)])
+    folders_new = np.append(folders_new, folder)
+    filenames_new =  np.append(filenames_new, filenames_i)
 os.chdir(working_folder)
-filepaths = []
-for filename in filenames:
-    filepaths += list([str(pp) for pp in pathlib.Path('.').glob(filename)])
-name_sizes = np.array([len(name) for name in filenames])
-filenames_sorted = []
-for size in np.unique(name_sizes):
-    mask = name_sizes == size
-    filenames_sorted += sorted(filenames[mask])
-filenames = [str(name) for name in filenames_sorted]
+_, inds = np.unique(filenames_new, return_index=True)
+folders_sorted = folders_new[inds]
+filenames_sorted = filenames_new[inds]
+folders = folders_sorted
+filenames = filenames_sorted
 if len(filenames) == 0:
     print('Error: No files found.\n')
     sys.exit()
 original_filenames = copy.copy(filenames)
-use_csv_format_for_input = any([name.endswith('.csv') for name in filenames])
 
 # Reading of files.
+filenames_info = []
 spectra, spectra_names = [], []
-if use_csv_format_for_input:
-    for filename in filenames:
-        df = pd.read_csv(filename)
-        data = df.values
-        columns = list(df.columns)[1:]
-        x, y = data[:,[0,1]].T
-        if np.median(x) < 200.:
-            input_in_microns = True
-        if np.nanmedian(y) < 1e-10:
-            variable_y = 'absorption coefficient (cm2)'
-        if input_in_microns:
-            x = 1e4 / x
-        x, inds = np.unique(x, return_index=True)
-        num_spectra = data.shape[1] - 1
-        for i in range(num_spectra):
-            name = filename.split(sep)[-1] + ' - ' + columns[i]
-            y = data[inds,i+1]
-            x_, y_, _ = fill_spectrum(x, y)
-            spectrum = {'x': x_, 'y': y_, 'y-unc': None, 'edited': False}
-            spectra += [spectrum]
-            spectra_names += [name]
-else:
-    i = 0
-    while i < len(filenames):
-        filename = filenames[i]
-        name = filename.split(sep)[-1]
-        data = np.loadtxt(filename, comments=['#','%','!',';'])
-        try:
+prev_variable_y = None
+i = 0
+while i < len(filenames):
+    folder = folders[i]
+    filename = filenames[i]
+    os.chdir(folder)
+    use_csv_format_for_input = filename.endswith('.csv')
+    try:
+        if use_csv_format_for_input:
+            df = pd.read_csv(filename)
+            data = df.values
+            columns = list(df.columns)[1:]
+            y_unc = None
+            names = [filename + ' - ' + column for column in columns]
+            filenames_info += [{filename: columns}]
+        else:
             data = np.loadtxt(filename, comments=['#','%','!',';'])
-        except:
-            print(f'Error: File {filename} could not be opened.')
-            del filenames[i]
-            continue
-        x, y = data[:,[0,1]].T
-        y_unc = data[:,2] if data.shape[1] >= 3 else None
-        if np.median(x) < 200.:
-            input_in_microns = True
-        if np.nanmedian(y) < 1e-10:
-            variable_y = 'absorption coefficient (cm2)'
-        if input_in_microns:
-            x = 1e4 / x
-        x, inds = np.unique(x, return_index=True)
-        y = y[inds]
-        if y_unc is not None:
-            y_unc = y_unc[inds]
-        x, y, y_unc = fill_spectrum(x, y, y_unc)
-        spectrum = {'x': x, 'y': y, 'y-unc': y_unc, 'edited': False}
+            y_unc = data[:,2] if data.shape[1] >= 3 else None
+            names = [filename]
+            filenames_info += [filename]
+    except:
+        print(f'Error: File {filename} could not be opened.')
+        del folders[i], filenames[i]
+        continue
+    x, y = data[:,[0,1]].T
+    if np.nanmedian(np.abs(y)) < 1e-12:
+        variable_y = 'absorption coefficient (cm2)'
+        if prev_variable_y is not None and prev_variable_y != variable_y:
+            print(f'Error: Files {filename} and {filenames[-1]} have different'
+                   'intensity magnitudes (absorbance / absorption coefficient.')
+            sys.exit()
+    if np.median(x) < 200.:
+        x = 1e4 / x
+    x, inds = np.unique(x, return_index=True)
+    if y_unc is not None:
+        y_unc = y_unc[inds]
+    for (j, name) in enumerate(names):
+        y = data[inds,j+1] if use_csv_format_for_input else y[inds]
+        x_, y_, y_unc_ = fill_spectrum(x, y, y_unc)
+        spectrum = {'x': x_, 'y': y_, 'y-unc': y_unc_, 'edited': False}
         spectra += [spectrum]
+        if '.' in name:
+            ext = name.split('.')[-1]
+            if ' ' not in ext:
+                n = len(ext) + 1
+                name = name[:-n]
+            if name[-1] == 'K' and len(name) > 1 and name[-2].isdigit():
+                name = name[:-1] + ' K'
         spectra_names += [name]
-        i += 1
-    columns = []
-    num_spectra = len(filenames)
-    if num_spectra == 0:
-        print()
-        sys.exit()
+    i += 1
+    prev_variable_y = copy.copy(variable_y)
+num_spectra = len(filenames)
+if num_spectra == 0:
+    print()
+    sys.exit()
+os.chdir(working_folder)
         
 # Setting of colors.
 cmap_old = plt.colormaps[colormaps['original']['name']]
@@ -2992,14 +3124,9 @@ y_lims = calculate_robust_ylims(spectra, x_lims, perc1=0.1, perc2=99.5,
 noise_level = 0.5 * compute_noise(spectra)
 
 # Info file.
-variable_x = 'wavelength' if input_in_microns else 'wavenumber' 
-if use_csv_format_for_input:
-    input_data_info = {'file': filename, 'columns': columns,
-                       'x': variable_x, 'y': variable_y,
-                       'number of spectra': num_spectra}
-else:
-    input_data_info = {'files': spectra_names, 'number of spectra': num_spectra,
-                       'x': variable_x, 'y': variable_y}
+variable_x = 'wavelength (μm)' if use_microns else 'wavenumber (/cm)' 
+input_data_info = {'files': filenames_info, 'number of spectra': num_spectra,
+                   'x': variable_x, 'y': variable_y,}
 
 #%% Loading the interactive mode.
     
@@ -3092,7 +3219,6 @@ using_joint_editing_mode = True
 using_manual_baseline_mode = False
 invert_yaxis = False
 use_logscale = False
-use_microns = False
 in_macro = False
 copied_data = None
 waiting_for_click = False
