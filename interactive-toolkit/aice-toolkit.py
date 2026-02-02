@@ -3035,20 +3035,25 @@ while i < len(filenames):
     use_csv_format_for_input = filename.endswith('.csv')
     try:
         if use_csv_format_for_input:
-            df = pd.read_csv(filename)
+            for char in ['#', '%', '!']:
+                try:
+                    df = pd.read_csv(filename, dtype=float, comment=char)
+                except:
+                    continue
             data = df.values
             columns = list(df.columns)[1:]
             y_unc = None
             names = [filename + ' - ' + column for column in columns]
             filenames_info += [{filename: columns}]
         else:
-            data = np.loadtxt(filename, comments=['#','%','!',';'])
+            data = np.loadtxt(filename, dtype=float, comments=['#','%','!',';'])
             y_unc = data[:,2] if data.shape[1] >= 3 else None
             names = [filename]
             filenames_info += [filename]
     except:
         print(f'Error: File {filename} could not be opened.')
-        del folders[i], filenames[i]
+        folders = np.delete(folders, i)
+        filenames = np.delete(filenames, i)
         continue
     x, y = data[:,[0,1]].T
     if np.nanmedian(np.abs(y)) < 1e-12:
