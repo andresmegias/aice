@@ -700,6 +700,7 @@ def custom_format_coord(x, y):
     text = f'(x, y) = ({x:.3f}, {y:.6f})'
     return text
 ax.format_coord = custom_format_coord
+formatter = plt.FuncFormatter(lambda x, _: str(int(x)) if x.is_integer() else str(x))
 
 igs = 0  # last gridspec index
 
@@ -707,7 +708,7 @@ if show_signal_to_noise:
 
     igs += 1
     ax = plt.gcf().add_subplot(gs[igs], sharex=ax)
-    ax_3 = ax
+    ax_1 = ax
     
     for (name, spectrum) in spectra_orig.items():
         x, y, y_unc, _ = spectrum.T
@@ -753,7 +754,7 @@ if show_spectral_spacing:
 
     igs += 1
     ax = plt.gcf().add_subplot(gs[igs], sharex=ax)
-    ax_1 = ax
+    ax_2 = ax
     
     for (name, spectrum) in spectra_orig.items():
         x, _, _, r = spectrum.T
@@ -773,6 +774,7 @@ if show_spectral_spacing:
     units = 'μm' if spectral_variable == 'wavelength' else 'cm$^{-1}$'
     plt.ylabel(f'{spectral_variable}' '\n' f'spacing ({units})', fontsize=8)
     if spectral_variable == 'wavelength':
+        ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
         ax2 = ax.secondary_xaxis('bottom', functions=(axis_conversion, axis_conversion))
         ax2.set_xticks(wavelength_ticks, wavelength_ticklabels)
         ax2.set_xlabel('wavelength (μm)', labelpad=6.)
@@ -786,8 +788,11 @@ if show_spectral_spacing:
         plt.xlabel('wavenumber (cm$^{-1}$)')
         ax2 = ax.secondary_xaxis('top')
         ax2.tick_params(axis='x', which='both', direction='in', labeltop=False)
-        ax.yaxis.set_major_formatter(plt.ScalarFormatter())
         ax_ = ax
+    ax.yaxis.set_major_locator(plt.LogLocator(base=10., numticks=100))
+    ax.yaxis.set_minor_locator(plt.LogLocator(base=10., subs=np.arange(2, 10)*0.1,
+                                              numticks=100))
+    ax.yaxis.set_major_formatter(formatter)
     plt.axvline(x=0., color='black', ls='--', lw=0.8)
     ax.tick_params(axis='y', which='both', right=True)
     ylines = [1., 10.] if spectral_variable == 'wavenumber' else [0.001, 0.01, 0.1]
@@ -800,7 +805,7 @@ if show_resolving_power:
 
     igs += 1
     ax = plt.gcf().add_subplot(gs[igs], sharex=ax)
-    ax_2 = ax
+    ax_3 = ax
     
     for (name, spectrum) in spectra_orig.items():
         x, _, _, r = spectrum.T
@@ -825,8 +830,11 @@ if show_resolving_power:
         plt.xlabel('wavenumber (cm$^{-1}$)')
         ax2 = ax.secondary_xaxis('top')
         ax2.tick_params(axis='x', which='both', direction='in', labeltop=False)
-        ax.yaxis.set_major_formatter(plt.ScalarFormatter())
         ax_ = ax
+    ax.yaxis.set_major_locator(plt.LogLocator(base=10., numticks=100))
+    ax.yaxis.set_minor_locator(plt.LogLocator(base=10., subs=np.arange(2, 10)*0.1,
+                                              numticks=100))
+    ax.yaxis.set_major_formatter(plt.ScalarFormatter())
     plt.axvline(x=0., color='black', ls='--', lw=0.8)
     ax.tick_params(axis='y', which='both', right=True)
     for yi in [100., 1000.]:
@@ -839,15 +847,15 @@ with warnings.catch_warnings():
     plt.tight_layout()
 
 if show_signal_to_noise:
-    for tick in ax_3.yaxis.get_major_ticks():
-        if float(tick.get_loc()) not in [1., 10., 100.]:
-            tick.label1.set_visible(False)
-if show_spectral_spacing and spectral_variable == 'wavenumber':
     for tick in ax_1.yaxis.get_major_ticks():
         if float(tick.get_loc()) not in [1., 10., 100.]:
             tick.label1.set_visible(False)
-if show_resolving_power:
+if show_spectral_spacing and spectral_variable == 'wavenumber':
     for tick in ax_2.yaxis.get_major_ticks():
+        if float(tick.get_loc()) not in [1., 10., 100.]:
+            tick.label1.set_visible(False)
+if show_resolving_power:
+    for tick in ax_3.yaxis.get_major_ticks():
         if float(tick.get_loc()) not in [100., 1000.]:
             tick.label1.set_visible(False)
 

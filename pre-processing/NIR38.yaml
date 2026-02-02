@@ -15,11 +15,11 @@ merging:
     show full original spectra: no
     flux units: 'mJy'
     use logarithmic scale for flux: no
-    output spectral variable: 'wavelength'
-    show signal-to-noise: yes
+    output spectral variable: 'wavenumber'
+    show signal-to-noise: no
     show spectral spacing: yes
-    show resolving power: yes
-    # new spectral range (/cm): [4001, 480, 2]
+    show resolving power: no
+    new spectral range (/cm): [4001, 480, 1]
     colors:
         NIRCam: 'brown'
         NIRSpec: 'lightcoral'

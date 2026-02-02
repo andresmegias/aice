@@ -10,7 +10,7 @@ Andrés Megías
 """
 
 # Configuration file.
-config_file = 'NIR38.yaml'
+config_file = 'J110621.yaml'
 
 # Libraries.
 import os
