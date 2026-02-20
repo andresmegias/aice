@@ -354,16 +354,7 @@ plt.legend(fontsize='small', loc='lower right')
 plt.suptitle(name, fontweight='bold')
 plt.tight_layout()
 
-#%% Saving of plot and files.
-
-path = os.path.join(folder, 'silicatefit.png')
-plt.savefig(path)
-print('Saved plot in {}.'.format(path))
-
-path = os.path.join(folder, f'{name}-silic.txt')
-np.savetxt(path, np.array([wavelength, sil_absorbance_interp]).T,
-           header='wavenumber_(/cm) absorbance_(mJy)', fmt=['%.7f','%.9f'])
-print('Saved silicate fit in {}.'.format(path))
+#%% Saving of files.
 
 if output_file.endswith('.txt') or output_file.endswith('.dat'):
     absorbance_corr_txt = absorbance_corr_rv.mains
