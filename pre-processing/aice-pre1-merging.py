@@ -864,9 +864,10 @@ if show_resolving_power:
 
 folder += sep.join(output_file.split(sep)[:-1])
 output_file = output_file.split(sep)[-1]
-path = os.path.join(folder, 'spectra.png')
-plt.savefig(path)
-print(f'Saved plot in {path}.')
+
+# path = os.path.join(folder, 'spectra.png')
+# plt.savefig(path)
+# print(f'Saved plot in {path}.')
 
 if not os.path.exists(folder):
     os.makedirs(folder)
