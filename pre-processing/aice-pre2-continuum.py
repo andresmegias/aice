@@ -296,16 +296,7 @@ plt.suptitle(name, fontweight='bold')
 plt.tight_layout()  # h_pad = 0
 
 
-#%% Saving of plot and files.
-
-# path = os.path.join(folder, 'continuumfit.png')
-# plt.savefig(path)
-# print(f'Saved plot in {path}.')
-
-path = os.path.join(folder, f'{name}-cont.txt')
-np.savetxt(path, np.array([cont_wavenumber, cont_flux]).T,
-           header='wavenumber_(/cm) continuum_(mJy)', fmt=['%.7f','%.9f'])
-print(f'Saved fitted continuum in {path}.')
+#%% Saving of files.
 
 if output_file.endswith('.txt') or output_file.endswith('.dat'):
     absorbance_txt = absorbance_rv.mains
