@@ -27,9 +27,9 @@ continuum fit:
     input spectral variable: 'wavelength'
     fits:
     - continuum file:
-          file: 'AV95_localcont_wholerange_v4.dat'
-          column indices: {'x': 1, 'y': 3}
-          scale factor: 142.86
+          file: 'J110621-continuum.txt'
+          column indices: {'x': 1, 'y': 2}
+          scale factor: 1.0
           description:
           - polynomial:
                 range (μm): [2.4, 5.2]
