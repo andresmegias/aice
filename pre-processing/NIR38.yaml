@@ -31,9 +31,9 @@ continuum fit:
     input spectral variable: 'wavelength'
     fits:
     - continuum file:
-        file: 'AV60_localcont_wholerange_v4.dat'
-        column indices: {'x': 1, 'y': 3}
-        scale factor: 1e3
+        file: 'NIR38-continuum.txt'
+        column indices: {'x': 1, 'y': 2}
+        scale factor: 1.0
         description:
         - polynomial:
               range (μm): [2.44, 5.0]
