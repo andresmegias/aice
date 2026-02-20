@@ -1,5 +1,5 @@
 input spectrum: '../../spectra/astro/NIR38/NIR38-c-s.txt'
-model file: '../training/models/aice2-model.pkl'
+model file: '../training/models/aice-model.pkl'
 # saturated regions (/cm): [[2370., 2325.]]
 spectrum vertical range: [-0.4, 11.2]
 molecular fraction range: [0., 0.7]
