@@ -2,67 +2,478 @@
 # -*- coding: utf-8 -*-
 """
 -------------------------------------------------
-Automatic Ice Composition Estimator (AICE)  v 1.0
+Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Inference module
 
 Andrés Megías
 """
 
-config_file = 'NIR38.yaml'
+config_file = 'J110621.yaml'
 
 # Libraries.
 import os
 import sys
+import copy
+import pickle
+import warnings
 import yaml
-import spectres
 import numpy as np
 import pandas as pd
 import richvalues as rv
+import scipy.interpolate
 import matplotlib.pyplot as plt
 
 # Functions.
 
 relu = lambda x: np.maximum(0, x)
+softplus = lambda x: np.log(1 + np.exp(x))
 sigmoid = lambda x: 1 / (1 + np.exp(-x))
 
-def supersample_spectrum(new_wavs, spec_wavs, spec_fluxes, spec_errs=None,
-                         fill=np.nan):
-    """Supersample spectrum to the input points."""
-    new_fluxes = np.interp(new_wavs, spec_wavs, spec_fluxes,
-                           left=fill, right=fill)
-    if spec_errs is None:
-        new_errs = None
-    else:
-        new_errs = np.zeros(len(new_wavs))
-        for (i,xi) in enumerate(new_wavs):
-            if xi <  min(spec_wavs) or xi > max(spec_wavs):
-                new_errs[i] = fill
-            elif any(spec_wavs == xi):
-                new_errs[i] = spec_errs[np.argwhere(spec_wavs==xi)[0][0]]
+def spectres(new_wavs, spec_wavs, spec_fluxes, spec_errs=None,
+            fill=None, supersample_linearly=False, verbose=True):
+
+    """
+    Function for resampling spectra (and optionally associated
+    uncertainties) onto a new wavelength basis.
+    SpectRes function by Adam Carnall, slightly modified by Andrés Megías.
+
+    Parameters
+    ----------
+
+    new_wavs : numpy.ndarray
+        Array containing the new wavelength sampling desired for the
+        spectrum or spectra.
+
+    spec_wavs : numpy.ndarray
+        1D array containing the current wavelength sampling of the
+        spectrum or spectra.
+
+    spec_fluxes : numpy.ndarray
+        Array containing spectral fluxes at the wavelengths specified in
+        spec_wavs, last dimension must correspond to the shape of
+        spec_wavs. Extra dimensions before this may be used to include
+        multiple spectra.
+
+    spec_errs : numpy.ndarray (optional)
+        Array of the same shape as spec_fluxes containing uncertainties
+        associated with each spectral flux value.
+
+    fill : float (optional)
+        Where new_wavs extends outside the wavelength range in spec_wavs
+        this value will be used as a filler in new_fluxes and new_errs.
+
+    verbose : bool (optional)
+        Setting verbose to False will suppress the default warning about
+        new_wavs extending outside spec_wavs and "fill" being used.
+
+    Returns
+    -------
+
+    new_fluxes : numpy.ndarray
+        Array of resampled flux values, last dimension is the same
+        length as new_wavs, other dimensions are the same as
+        spec_fluxes.
+
+    new_errs : numpy.ndarray
+        Array of uncertainties associated with fluxes in new_fluxes.
+        Only returned if spec_errs was specified.
+    """
+
+    def make_bins(wavs):
+        """ Given a series of wavelength points, find the edges and widths
+        of corresponding wavelength bins. """
+        edges = np.zeros(wavs.shape[0]+1)
+        widths = np.zeros(wavs.shape[0])
+        edges[0] = wavs[0] - (wavs[1] - wavs[0])/2
+        widths[-1] = (wavs[-1] - wavs[-2])
+        edges[-1] = wavs[-1] + (wavs[-1] - wavs[-2])/2
+        edges[1:-1] = (wavs[1:] + wavs[:-1])/2
+        widths[:-1] = edges[1:-1] - edges[:-2]
+        return edges, widths
+
+    # Rename the input variables for clarity within the function.
+    old_wavs = spec_wavs
+    old_fluxes = spec_fluxes
+    old_errs = spec_errs
+
+    # Make arrays of edge positions and widths for the old and new bins
+    old_edges, old_widths = make_bins(old_wavs)
+    new_edges, new_widths = make_bins(new_wavs)
+
+    # Generate output arrays to be populated
+    new_fluxes = np.zeros(old_fluxes[...,0].shape + new_wavs.shape)
+
+    if old_errs is not None:
+        if old_errs.shape != old_fluxes.shape:
+            raise ValueError("If specified, spec_errs must be the same shape "
+                             "as spec_fluxes.")
+        else:
+            new_errs = np.copy(new_fluxes)
+
+    start = 0
+    stop = 0
+
+    # Calculate new flux and uncertainty values, looping over new bins
+    for j in range(new_wavs.shape[0]):
+
+        # Add filler values if new_wavs extends outside of spec_wavs
+        if (new_edges[j] < old_edges[0]) or (new_edges[j+1] > old_edges[-1]):
+            new_fluxes[...,j] = fill
+
+            if spec_errs is not None:
+                new_errs[...,j] = fill
+
+            if (j == 0 or j == new_wavs.shape[0]-1) and verbose:
+                warnings.warn(
+                    "Spectres: new_wavs contains values outside the range "
+                    "in spec_wavs, new_fluxes and new_errs will be filled "
+                    "with the value set in the 'fill' keyword argument "
+                    "(by default NaN).",
+                    category=RuntimeWarning,
+                )
+            continue
+
+        # Find first old bin which is partially covered by the new bin
+        while old_edges[start+1] <= new_edges[j]:
+            start += 1
+
+        # Find last old bin which is partially covered by the new bin
+        while old_edges[stop+1] < new_edges[j+1]:
+            stop += 1
+
+        # If new bin is fully inside an old bin start and stop are equal
+        if stop == start:
+            if supersample_linearly:
+                i1 = max(0, start-1)
+                i2 = min(start+1, old_wavs.shape[0]-1)
+                if supersample_linearly:
+                    new_fluxes[...,j] = np.interp(new_wavs[j],
+                                        old_wavs[i1:i2+1], old_fluxes[i1:i2+1])
+                else:
+                    new_fluxes[...,j] = old_fluxes[...,start]
             else:
-                inds = np.argsort(np.abs(spec_wavs - xi))[:2]
-                x1x2 = spec_wavs[inds]
-                x1, x2 = min(x1x2), max(x1x2)
-                mask = (new_wavs > x1) & (new_wavs < x2)
-                num_points = np.sum(mask)
-                err1 = spec_errs[np.argwhere(spec_wavs == x1)][0][0]
-                err2 = spec_errs[np.argwhere(spec_wavs == x2)][0][0]
-                err_m = np.mean([err1, err2])
-                new_errs[i] = np.sqrt(num_points) * err_m
+                new_fluxes[...,j] = old_fluxes[...,start]
+            if old_errs is not None:
+                new_errs[...,j] = old_errs[...,start]
+                # Artificially enlarge uncertainties to be consistent.
+                new_errs[...,j] *= np.sqrt(old_widths[start] / new_widths[j])        
+
+        # Otherwise multiply the first and last old bin widths by P_ij
+        else:
+            start_factor = ((old_edges[start+1] - new_edges[j])
+                            / (old_edges[start+1] - old_edges[start]))
+
+            end_factor = ((new_edges[j+1] - old_edges[stop])
+                          / (old_edges[stop+1] - old_edges[stop]))
+            old_widths_local = old_widths[start:stop+1].copy()
+            if not supersample_linearly or supersample_linearly and stop != start+1:
+                old_widths_local[0] *= start_factor
+                old_widths_local[stop-start] *= end_factor
+
+            # Populate new_fluxes spectrum and uncertainty arrays
+            f_widths = old_widths_local * old_fluxes[...,start:stop+1]
+            new_fluxes[...,j] = np.sum(f_widths, axis=-1)
+            new_fluxes[...,j] /= np.sum(old_widths_local)
+
+            if old_errs is not None:
+                # Case of new bin partially overlapping only one old bin.
+                if stop == start+1:
+                    # Including old flux value at new left edge.
+                    if old_wavs[...,start] == new_edges[...,j]:
+                        start = max(0, start-1)
+                    # Artificially enlarge uncertainties to be consistent.
+                    factor = np.sqrt(np.sum(old_widths[start:stop+1])/new_widths[j])
+                else:
+                    factor = 1.
+                e_wid = old_widths[start:stop+1] * old_errs[...,start:stop+1]
+                new_errs[...,j] = np.sqrt(np.sum(e_wid**2, axis=-1))
+                new_errs[...,j] /= np.sum(old_widths[start:stop+1])
+                new_errs[...,j] *= factor
+
+    # If errors were supplied return both new_fluxes and new_errs.
+    if old_errs is not None:
         return new_fluxes, new_errs
-    
-def resample_spectrum(new_wavs, spec_wavs, spec_fluxes, spec_errs=None,
-                      fill=np.nan, verbose=True):
-    """Resample spectrum to the input points."""
-    mask = (new_wavs >= min(spec_wavs)) & (new_wavs <= max(spec_wavs))
-    if len(new_wavs[mask]) <= len(spec_wavs):
-        new_fluxes, new_errs = spectres.spectres(new_wavs, spec_wavs,
-                                    spec_fluxes, spec_errs, fill, verbose)
+
+    # Otherwise just return the new_fluxes spectrum array
     else:
-        new_fluxes, new_errs = supersample_spectrum(new_wavs, spec_wavs,
-                                                spec_fluxes, spec_errs, fill)
-    return new_fluxes, new_errs
+        return new_fluxes
+    
+def resample_spectrum(x_new, x, y, y_unc=None, supersample_linearly=False):
+    """Use SpectRes to resample the input spectrum."""
+    ssl = supersample_linearly
+    result = spectres(x_new, x, y, y_unc, fill=np.nan,
+                      supersample_linearly=ssl, verbose=False)
+    return result
+
+def fill_spectrum(x, y, y_unc=None, threshold=1.5):
+    """Fill the gaps in the input spectrum with NaNs."""
+    x_ = np.array([], float)
+    y_ = np.array([], float)
+    dx = np.median(np.diff(x))
+    for i in range(len(x)-1):
+        if x[i+1] - x[i] > threshold * dx:
+            x_range = x[i+1] - x[i]
+            num_points = round(x_range / dx)
+            dx_ = x_range / num_points
+            x_i = np.arange(x[i]+dx, x[i+1]-dx, dx_)
+            y_i = np.nan * np.ones(len(x_i))
+            x_ = np.append(x_, x_i)
+            y_ = np.append(y_, y_i)
+    x_new = np.append(x, x_)
+    y_new = np.append(y, y_)
+    inds = np.argsort(x_new)
+    if y_unc is not None:
+        y_unc_new = np.append(y_unc, y_)
+        y_unc_new = y_unc_new[inds]
+    x_new = x_new[inds]
+    y_new = y_new[inds]
+    return x_new, y_new, y_unc_new
+
+def fit_baseline(x, y, smooth_size=1, windows=None, interpolation='spline'):
+    """
+    Fit the baseline of the input data using the specified windows.
+
+    Parameters
+    ----------
+    x, y : arrays
+        Data to fit the baseline.
+    smooth_size : int, optional
+        Size of the filter applied for the fitting of the baseline.
+        By default it is 1 (no smoothing).
+    windows : array, optional
+        Windows that specify regions of the data to use for the fit.
+        By default, it is all the spectral range.
+    interpolation : str, optional
+        Type of interpolation.
+        Possible values are 'spline' (default) or 'pchip'.
+
+    Returns
+    -------
+    yb : array
+        Resulting baseline.
+    """
+    if interpolation not in ('spline', 'pchip'):
+        raise Exception("Wrong interpolation type. Should be 'spline' or 'pchip'.")
+    if interpolation == 'pchip':
+        y = rv.rolling_function(np.nanmedian, y, smooth_size)
+    np_isfinite_y = np.isfinite(y)
+    if windows is None:
+        mask = np_isfinite_y
+        x_ = x[mask]
+        y_ = y[mask]
+    else:
+        mask = np.zeros(len(x), bool)
+        for (x1, x2) in windows:
+            mask |= (x >= x1) & (x <= x2) & np_isfinite_y
+        x_ = x[mask]
+        y_ = y[mask]
+    if interpolation == 'pchip':
+        spl = scipy.interpolate.PchipInterpolator(x_, y_)
+    elif interpolation == 'spline':
+        y_s = rv.rolling_function(np.median, y_, smooth_size)
+        s = np.nansum((y_s-y_)**2)
+        k = len(y_)-1 if len(y_) <= 3 else 3
+        spl = scipy.interpolate.UnivariateSpline(x_, y_, s=s, k=k)
+    yb = spl(x)
+    return yb
+
+def gaussian(x, x0, s, h):
+    """Gaussian with given center (x0), width (s) and height (h)."""
+    y = h * np.exp(-0.5*((x-x0)/s)**2)
+    return y
+
+def correct_saturation(x, y, windows='auto'):
+    """Correct saturation in input spectrum for H2O, CO and CO2 bands."""
+    if windows == 'auto':
+        windows = [[2367., 2328.], [2146., 2135.]]
+    ys = rv.rolling_function(np.mean, y, size=3)
+    y_new = copy.copy(y)
+    for x1x2 in windows:
+        x1, x2 = min(x1x2), max(x1x2)
+        mask = (x >= x1) & (x <= x2)
+        x_ = x[mask]
+        y_ = ys[mask]
+        center = 0.5 * (x1 + x2)
+        width = 0.25 * (x2 - x1)
+        height = np.nanmax(y_)
+        x1 = None
+        for i in range(len(x_)-1):
+            if y_[i+1] < y_[i] or np.isnan(y_[i+1]):
+                x1 = x_[i]
+                break
+        x2 = None
+        for i in range(len(x_)-1):
+            if y_[-i-2] < y_[-i-1] or np.isnan(y_[-i-2]):
+                x2 = x_[-i]
+                break
+        if x1 is not None and x2 is not None:
+            mask_ = (x_ <= x1) | (x_ >= x2) 
+        else:
+            mask_ = np.ones(len(x_), bool)
+        mask_ &= np.isfinite(y_)
+        y_ = y[mask]
+        guess = [center, width, height]
+        try:
+            params = scipy.optimize.curve_fit(gaussian, x_[mask_], y_[mask_],
+                                              p0=guess)[0]
+        except:
+            return y
+        if x1 is not None and x2 is not None:
+            mask = (x >= x1) & (x <= x2)
+            x_ = x[mask]
+        y_curve = gaussian(x_, *params)
+        y_new[mask] = np.maximum(y_new[mask], y_curve)
+    return y_new
+
+def interpolate_nans(x, y, smooth_size, interpolation='pchip'):
+    """Fill NaNs in input spectrum by interpolating the surrounding points."""
+    y_new = copy.copy(y)
+    mask = np.isnan(y)
+    if any(mask):
+        baseline = fit_baseline(x, y, smooth_size, interpolation=interpolation)
+        y_new[mask] = baseline[mask]
+    return y_new
+
+def extract_spectrum(x, y, windows):
+    """Extract input spectrum in given windows, deleting the rest."""
+    y_new = np.zeros(len(x), float)
+    mask = np.zeros(len(x), bool)
+    for x1x2 in windows:
+        x1, x2 = min(x1x2), max(x1x2)
+        mask |= (x >= x1) & (x <= x2)
+    y_new[mask] = y[mask]
+    y_new /= np.mean(y_new)
+    return y_new
+
+def aice_model(wavenumber, absorbance, weights, model_info,
+               correct_co=True, return_extra_info=False):
+    """
+    Neural network model of AICE.
+    
+    Predict the composition and temperature of the input spectrum.
+    The composition is given in terms of H2O, CO, CO2, CH3OH, NH3 and CH4.
+    
+    Parameters
+    ----------
+    wavenumber : array (float)
+        Wavenumber points of the spectrum.
+    absorbance : array (float)
+        Absorbance points of the spectrum.
+    wavenumber_aice : array (float)
+        Reference wavenumber points used to train AICE.
+    weights : array (float)
+        Weights of the neural network ensemble.
+    
+    Returns
+    -------
+    prediction_df : dataframe (float)
+        Predictions for the temperature and molecular fractions.
+    """
+    relu = lambda x: np.maximum(0, x)
+    def sigmoid(x):
+        with np.errstate(all='ignore'):
+            y = 1 / (1 + np.exp(-x))
+        return y
+    def nn_model(x, weights, end_act):
+        """Multi-layer perceptron of AICE."""
+        w = weights
+        w1, b1 = w[0], w[1]
+        ga1, be1, m1, s1 = w[2], w[3], w[4], w[5]
+        w2, b2 = w[6], w[7]
+        ga2, be2, m2, s2 = w[8], w[9], w[10], w[11]
+        w3, b3 = w[12], w[13]
+        ga3, be3, m3, s3 = w[14], w[15], w[16], w[17]
+        w4, b4 = w[18], w[19]  
+        e = 1e-3
+        a1 = relu(np.dot(w1.T, x) + b1)
+        a1 = ga1 * (a1 - m1) / (s1 + e)**0.5 + be1
+        a2 = relu(np.dot(w2.T, a1) + b2)
+        a2 = ga2 * (a2 - m2) / (s2 + e)**0.5 + be2
+        a3 = relu(np.dot(w3.T, a2) + b3)
+        a3 = ga3 * (a3 - m3) / (s3 + e)**0.5 + be3
+        y = end_act(np.dot(w4.T, a3) + b4)
+        return y
+    wavenumber_aice = model_info['wavenumber']
+    aice_resolution = model_info['resolution']
+    aice_spacing = model_info['spacing']
+    absorbance_ = correct_saturation(wavenumber, absorbance)
+    absorbance_ = interpolate_nans(wavenumber, absorbance_, smooth_size=15,
+                                   interpolation='pchip')
+    absorbance_aice = resample_spectrum(wavenumber_aice, wavenumber, absorbance_,
+                                        supersample_linearly=True)
+    size = round(aice_resolution / aice_spacing)
+    absorbance_aice = pd.Series(absorbance_aice).rolling(size, min_periods=1,
+                                                     center=True).mean().values
+    absorbance_aice = np.nan_to_num(absorbance_aice, nan=0.)
+    absorbance_aice /= np.mean(absorbance_aice)
+    results = []
+    for j in range(weights.shape[0]):
+        yj = np.zeros(weights.shape[1])
+        for i in range(len(yj)):
+            end_act = softplus if i == 0 else sigmoid
+            yj[i] = nn_model(absorbance_aice, weights[j,i], end_act)[0]
+        results += [yj]
+    results = np.array(results)
+    stdevs = np.std(results, axis=0)
+    predictions = np.mean(results, axis=0)
+    if correct_co and 'CO' in variables and 'CO2' in variables:
+        idx_co2 = np.argwhere(np.equal(variables, 'CO2'))[0,0]
+        preds_co2 = results[:,idx_co2]
+        pred_co2 = np.mean(results[:,idx_co2])
+        pred_co2_unc = np.std(results[:,idx_co2])
+        if pred_co2 > 0.03 and pred_co2_unc / pred_co2 < 0.5:
+            windows = [[2375., 2310.], [2150., 2120.]]
+            idx_co = np.argwhere(np.equal(variables, 'CO'))[0,0]
+            absorbance_aice_ = extract_spectrum(wavenumber_aice, absorbance_aice,
+                                                windows)
+            preds_co_co2 = []
+            for j in range(weights.shape[0]):
+                pred_co = nn_model(absorbance_aice_, weights[j,idx_co], sigmoid)[0]
+                pred_co2 = nn_model(absorbance_aice_, weights[j,idx_co2], sigmoid)[0]
+                preds_co_co2 += [pred_co / pred_co2]
+            preds_co = np.array(preds_co_co2) * preds_co2
+            results[:,idx_co] = preds_co
+    predictions = np.mean(results, axis=0)
+    stdevs = np.std(results, axis=0)
+    if return_extra_info:
+        return predictions, stdevs, results
+    else:
+        return predictions
+
+def get_windows_from_mask(mask, x):
+    """Obtain the ranges of the input mask associated with the array x."""
+    windows = []
+    in_window = False
+    for i in range(len(x)-1):
+        if not in_window and mask[i] == True:
+            in_window = True
+            window = [x[i]]
+        elif in_window and mask[i] == False:
+            in_window = False
+            window += [(x[i-1] + x[i])/2]
+            windows += [window]
+    if in_window:
+        window += [x[-1]]
+        windows += [window]
+    elif not in_window and x[-1] == True:
+        window = [(x[-2] + x[-1])/2, x[-1]]
+        windows += [window]
+    return windows
+
+def get_mask_from_windows(windows, x):
+    """Obtain a mask corresponding to the input windows on the array x"""
+    mask = np.zeros(len(x), bool)
+    for x1x2 in windows:
+        x1, x2 = min(x1x2), max(x1x2)
+        mask |= (x >= x1) & (x <= x2)
+    return mask
+
+def invert_windows(windows, x):
+    """Obtain the complementary of the input windows for the array x."""
+    mask = get_mask_from_windows(windows, x)
+    windows = get_windows_from_mask(~mask, x)
+    return windows
 
 def axis_conversion(x):
     """Axis conversion from wavenumber to wavelength and viceversa"""
@@ -84,15 +495,10 @@ default_options = {
     'figure size': [12., 5.],
     'save results': True,
     'output file': 'auto',
-    'model weights': os.path.join('..', 'training', 'models', 'aice-weights.npy'),
+    'model file': os.path.join('..', 'training', 'models', 'aice-model.pkl'),
     'spectral variable': 'wavenumber (/cm)',
     'intensity variable': 'absorbance',
-    'wavenumber range (/cm)': [4001., 980., 1.],
-    'resampling edges (/cm)': [],
-    'target variables': {0: 'temp. (K)', 1: 'H2O', 2: 'CO', 3: 'CO2',
-                         4: 'CH3OH', 5: 'NH3', 6: 'CH4'},
-    'formatted names': {'H2O': 'H$_2$O', 'CO': 'CO', 'CO2': 'CO$_2$',
-                        'CH3OH': 'CH$_3$OH', 'NH3': 'NH$_3$', 'CH4': 'CH$_4$'},
+    'saturated regions (/cm)': [],
     'spectrum vertical range': None,
     'molecular fraction range': [0., 1.0],
     'temperature range (K)': [0., 100.],
@@ -104,6 +510,8 @@ default_options = {
     'reference colors': ['orchid', 'orange', 'palevioletred'],
     'AICE label': 'AICE'
     }
+formatted_names = {'H2O': 'H$_2$O', 'CO': 'CO', 'CO2': 'CO$_2$',
+                   'CH3OH': 'CH$_3$OH', 'NH3': 'NH$_3$', 'CH4': 'CH$_4$'}
 
 # Configuration file.
 spectrum_name = config_file.replace('.yaml', '').replace('.', '')
@@ -114,16 +522,13 @@ with open(config_file) as file:
 config = {**default_options, **config}
 
 # Options.
-file = config['input spectrum']
+filename = config['input spectrum']
 column_inds = config['column indices']
 figsize = config['figure size']
-weights_path = config['model weights']
+model_path = config['model file']
 spectral_variable = config['spectral variable']
 intensity_variable = config['intensity variable']
-wavenumber_range = config['wavenumber range (/cm)']
-resampling_edges = config['resampling edges (/cm)']
-target_vars = config['target variables']
-formatted_names = config['formatted names']
+saturated_regions = config['saturated regions (/cm)']
 frac_range = config['molecular fraction range']
 absorb_range = config['spectrum vertical range']
 temp_range = config['temperature range (K)']
@@ -136,127 +541,98 @@ propagate_obs_uncs = config['propagate observational uncertainties']
 ref_colors = config['reference colors']
 save_results = config['save results']
 output_file = config['output file']
+# Some checks.
 show_references = used_references != []
-x1, x2, dx = wavenumber_range
-x1x2 = x1, x2
-x1, x2 = min(x1x2), max(x1x2)
-wavenumber = np.arange(x1, x2, dx)
-if resampling_edges == []:
-    resampling_edges = [x1, x2]
-else:
-    if resampling_edges[0] != x1:
-        resampling_edges = [x1] + resampling_edges
-    if resampling_edges[-1] != x2:
-        resampling_edges = resampling_edges + [x2]
-inds = list(target_vars.keys())
-num_vars = len(target_vars)
-variables = list(target_vars.values())
-species = [var for var in variables if 'temp' not in var]
 idx_x, idx_y = column_inds['x'] - 1, column_inds['y'] - 1
-idx_dy = column_inds['y unc.'] - 1 if 'y unc.' in column_inds else None
+idx_y_unc = column_inds['y unc.'] - 1 if 'y unc.' in column_inds else None
 
+# Model info and weights.
+with open(model_path, 'rb') as file:
+   weights, model_info = pickle.load(file)
+if len(weights.shape) == 2:
+    weights = weights.reshape(1,*weights.shape)
+x1x2 = model_info['wavenumber_range']
+x1, x2 = min(x1x2), max(x1x2)
+dx = model_info['spacing']
+wavenumber = wavenumber_aice = np.arange(x1, x2, dx)
+wavenumber_range = (x2, x1)
+model_info['wavenumber'] = wavenumber_aice
+variables = model_info['variables']
+species = [var for var in variables if 'temp' not in var]
 
 #%% Loading of files.
 
 # Reading of input spectrum.
-if '.csv' in file:
+if '.csv' in filename:
     data = pd.read_csv(file).values
     x, y = data[:,[idx_x, idx_y]]
-    data[:,idx_dy] if idx_dy is not None else np.zeros(len(y))
+    data[:,idx_y_unc] if idx_y_unc is not None else np.zeros(len(y))
 else:
-    data = np.loadtxt(file)
+    data = np.loadtxt(filename)
 x = data[:,idx_x]
 y = data[:,idx_y]
-dy = data[:,idx_dy] if idx_dy is not None else np.zeros(len(y))
+y_unc = data[:,idx_y_unc] if idx_y_unc is not None else np.zeros(len(y))
 if spectral_variable == 'wavelength (μm)':
     x = 1e4 / x
 if intensity_variable == 'optical depth':
     y /= np.log(10)
-    dy /= np.log(10)
+    y_unc /= np.log(10)
 inds = np.argsort(x)
 x = x[inds]
 y = y[inds]
-dy = dy[inds]
+y_unc = y_unc[inds]
+# x, y, y_unc = fill_spectrum(x, y, y_unc)
 
 # Resampling.
-x_, y_, dy_ = np.array([]), np.array([]), np.array([])
-for i in range(len(resampling_edges)-1):
-    xi1, xi2 = resampling_edges[i], resampling_edges[i+1]
-    mask = (x >= xi1) & (x <= xi2)
-    mask_ = (wavenumber >= xi1) & (wavenumber <= xi2)
-    xi = wavenumber[mask_]
-    yi, dyi = resample_spectrum(xi, x[mask], y[mask], dy[mask], verbose=False)
-    x_ = np.append(x_, xi)
-    y_ = np.append(y_, yi)
-    dy_ = np.append(dy_, dyi)
-absorbance = np.interp(wavenumber, x_, y_, left=0., right=0.)
-absorbance_unc = np.interp(wavenumber, x_, dy_, left=0., right=0.)
-mask_nan = np.isnan(absorbance)
-absorbance = np.nan_to_num(absorbance, nan=0.)
-absorbance_unc = np.nan_to_num(absorbance_unc, nan=0.)
+wavenumber_orig = copy.copy(x)
+absorbance_orig = copy.copy(y)
+absorbance_orig_unc = copy.copy(y_unc)
+smooth_size = int(round(model_info['resolution'] / model_info['spacing']))
+y_ = interpolate_nans(x, y, smooth_size=5, interpolation='pchip')
+y_res, y_res_unc = resample_spectrum(wavenumber, x, y_, y_unc,
+                                     supersample_linearly=True)
+y_res = np.nan_to_num(y_res, nan=0.)
+y_res = rv.rolling_function(np.mean, y_res, smooth_size)
+desaturate_regions = saturated_regions is not None
+if desaturate_regions:
+    y_desat = correct_saturation(x, y_, saturated_regions)
+    y_desat = interpolate_nans(x, y_desat, smooth_size=5, interpolation='pchip')
+    y_desat_res, y_res_unc = resample_spectrum(wavenumber, x, y_desat, y_unc,
+                                                     supersample_linearly=True)
+    y_desat_res = np.nan_to_num(y_desat_res, nan=0.)
+    y_desat_res = rv.rolling_function(np.mean, y_desat_res, smooth_size)
+    absorbance = y_desat_res
+    absorbance_sat = y_res
+else:
+    absorbance = y_res
+absorbance_unc = y_res_unc
+# y_aice = np.nan_to_num(y_aice, nan=0.)
 
 # Normalization.
 norm = np.mean(absorbance)
 absorbance /= norm
 absorbance_unc /= norm
+absorbance_orig /= norm
+absorbance_orig_unc /= norm
+if desaturate_regions:
+    absorbance_sat /= norm
 
-print(f'Read spectrum in file {file}.')
+print(f'Read spectrum in file {filename}.')
 print()
-
-# %% Preparation of the neural network model.
-
-# Model weights.
-weights = np.load(weights_path, allow_pickle=True)
-inds = list(target_vars.keys())
-if len(weights.shape) == 2:
-    weights = weights.reshape(1,*weights.shape)
-weights = weights[:,inds,:]
-
-# Multi-layer perceptron.
-def model_i(x, weights, end_act=sigmoid):
-    """Apply a multi-layer perceptron to input vector x."""
-    w = weights
-    w1, b1 = w[0], w[1]  # first hidden layer weights
-    ga1, be1, m1, s1 = w[2], w[3], w[4], w[5]  # first batch-norm weights
-    w2, b2 = w[6], w[7]  # second  hidden layer weights
-    ga2, be2, m2, s2 = w[8], w[9], w[10], w[11]  # second batch-norm weights
-    w3, b3 = w[12], w[13]  # third hidden layer weights
-    ga3, be3, m3, s3 = w[14], w[15], w[16], w[17]  # third batch-norm weights
-    w4, b4 = w[18], w[19]  # final layer weights
-    e = 1e-3  # correction for bath-norm variance
-    a1 = relu(np.dot(w1.T, x) + b1)  # first hidden layer
-    a1 = ga1 * (a1 - m1) / (s1 + e)**0.5 + be1  # first batch-norm
-    a2 = relu(np.dot(w2.T, a1) + b2)  # second hidden layer
-    a2 = ga2 * (a2 - m2) / (s2 + e)**0.5 + be2  # second batch-norm
-    a3 = relu(np.dot(w3.T, a2) + b3)  # third hidden layer
-    a3 = ga3 * (a3 - m3) / (s3 + e)**0.5 + be3  # third batch-norm
-    y = end_act(np.dot(w4.T, a3) + b4)  # final layer
-    return y
-
-# Neural network model.
-def nn_model(x, weights):
-    """Neural network model the targeted variables."""
-    ya = []
-    for j in range(len(weights)):
-        yj = np.zeros(num_vars)
-        for (i,var) in target_vars.items():
-            end_act = relu if 'temp' in var else sigmoid
-            yj[i] = model_i(x, weights[j,i], end_act)[0]
-        ya += [yj]
-    ya = np.array(ya)
-    dy = np.std(ya, ddof=1, axis=0)
-    y = np.mean(ya, axis=0)
-    return y, dy, ya
 
 #%% Calculations of AICE.
 
 # Predictions.
-predictions, stdevs, predictions_all = nn_model(absorbance, weights)
+predictions, stdevs, predictions_all = aice_model(wavenumber, absorbance,
+                                    weights, model_info, return_extra_info=True)
 if propagate_obs_uncs:
     print('Propagating observational uncertainties...\n')
-    predictions_rv = rv.array_function(lambda x: nn_model(x, weights)[0],
-                        rv.RichArray(absorbance, absorbance_unc),
-                    domain=[0,np.inf], len_samples=400, consider_intervs=False)
+    aice_model_ = lambda absorbance_orig: aice_model(wavenumber_orig, absorbance_orig,
+                                                     weights, model_info)
+    absorbance_orig_rv = rv.RichArray(absorbance_orig, absorbance_orig_unc)
+    predictions_rv = rv.array_function(aice_model_, absorbance_orig_rv,
+                                       domain=[0,np.inf], len_samples=400,
+                                       consider_intervs=False)
     obs_uncs = predictions_rv.uncs
 if (propagate_obs_uncs and any(rv.isnan(predictions).flatten())
         or not propagate_obs_uncs):
@@ -265,9 +641,13 @@ if (propagate_obs_uncs and any(rv.isnan(predictions).flatten())
 # Uncertainty estimation.
 stdevs = np.array([stdevs, stdevs]).T  # deviation of nn-predictions
 uncs = (obs_uncs**2 + stdevs**2)**0.5
-predictions = rv.RichArray(predictions, uncs, domains=[0,np.inf])
+predictions = rv.RichArray(predictions, uncs, domains=[0.,np.inf])
 
 # Preparation of results dataframe.
+variables = [var.replace('temp', 'temp. (K)') for var in variables]
+# if normalization == 'total':
+#     variables += ['all']
+#     predictions = np.append(predictions, predictions[1:].sum())
 results_df = rv.rich_dataframe({aice_label: predictions}, index=variables).T
 
 # Normalization.
@@ -347,18 +727,31 @@ if show_references:  # offsets for predictions
                    refs_names[1]: -0.30, refs_names[2]: 0.30}
 else:
     offsets = {aice_label: 0}
-fig = plt.figure(1, figsize=figsize)   # figure dimensions and ratios
+fig = plt.figure('AICE', figsize=figsize)   # figure dimensions and ratios
+plt.clf()
 width_ratios = [2.,1.] if normalization == 'total' else [3.,2.]
 width_ratios[-1] = width_ratios[-1] - (6. - len(species))/6.
 gs = plt.GridSpec(1, 2, width_ratios=width_ratios, wspace=0.18,
                   left=0.07, right=0.93, bottom=0.15, top=0.82)
-absorbance[mask_nan] = np.nan
-absorbance_unc[mask_nan] = np.nan
 
-# Plot of the spectrum.
+# Plot of the input spectrum.
 fig.add_subplot(gs[0,0])
+plt.errorbar(wavenumber_orig, absorbance_orig, absorbance_orig_unc,
+             linewidth=1., drawstyle='steps-mid', color='dimgray',
+             ecolor=[0.75]*3, label='original spectrum')
+plt.fill_between(wavenumber_orig, absorbance_orig-absorbance_orig_unc,
+                 absorbance_orig+absorbance_orig_unc, color=[0.75]*3, step='mid')
 plt.errorbar(wavenumber, absorbance, absorbance_unc, linewidth=1.,
-             color='black', ecolor='gray', label='observations')
+             drawstyle='steps-mid', color='black', ecolor=[0.20]*3,
+             label='resampled spectrum')
+if desaturate_regions:
+    mask = absorbance_sat != absorbance
+    x_ = wavenumber[mask]
+    y_ = absorbance[mask]
+    y_unc_ = absorbance_unc[mask]
+    x_, y_, y_unc_ = fill_spectrum(x_, y_, y_unc_)
+    plt.errorbar(x_, y_, y_unc_, linewidth=1., drawstyle='steps-mid',
+                 color='darkred', ecolor=[0.20]*3, label='desaturated parts')
 plt.axhline(y=0, color='k', ls='--', lw=0.6)
 if absorb_range is not None:
     plt.ylim(absorb_range)
@@ -368,8 +761,8 @@ plt.ylabel('normalised absorbance', labelpad=10)
 plt.legend(loc='upper right')
 ax = plt.gca()  
 ax2 = ax.secondary_xaxis('top', functions=(axis_conversion, axis_conversion))
-ax2.set_xticks([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30],
-               [1, 2, 3, 4, 5, '', 7, '', '', 10, 20, 30])
+ax2.set_xticks([2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30],
+               [2, 3, 4, 5, '', 7, '', '', 10, 20, 30])
 ax2.set_xlabel('wavelength (μm)', labelpad=10, fontsize=9)
 
 # Predicted fraction for normalization molecule.
@@ -383,7 +776,7 @@ if normalization != 'total':
     plt.bar([0], norm_results[aice_label].values[0].main,
             edgecolor='black', color='gray')
     if show_references:
-        for (i,key) in enumerate(references):
+        for (i, key) in enumerate(references):
             reference = norm_results[key].values
             rv.errorbar([0. + offsets[key]], reference[0], color=ref_colors[i])
     plt.margins(x=0.7)

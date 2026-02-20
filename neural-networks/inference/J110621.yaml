@@ -1,17 +1,18 @@
 input spectrum: '../../spectra/astro/J110621/J110621-c-s.txt'
-model weights: '../training/models/aice-sat-weights.npy'
-wavenumber range (/cm): [4001., 980., 1.]
-resampling edges (/cm): [1890.]
+model weights: '../training/models/aice-weights.npy'
+wavenumber range (/cm): [3751., 980., 1.]
+resolution (/cm): 1.
+saturated regions (/cm): 'auto'
 spectrum vertical range: [-0.4, 11.2]
 molecular fraction range: [0., 0.7]
 normalization: 'total'
 show predictions for all submodels: no
-propagate observational uncertainties: yes
+propagate observational uncertainties: no
 reference values:
     McClure et al. (2023):
         temp. (K): 11-1+2
-        H2O: 13.38-1.85+1.30
-        CO: 3.68-0.40+0.59
+        H2O: 12.16-1.68+1.18
+        CO: 2.89-0.31+0.46
         CO2: 1.74-0.22+0.21
         CH3OH: 0.51-0.09+0.19
         NH3: 0.66-0.06+0.15
@@ -26,7 +27,14 @@ reference values:
         NH3: 3
         CH4: 1
         other: 1
+    AICE-BI (this work):
+        H2O: 7.99+/-0.05
+        CO: 2.54-0.24+0.27
+        CO2: 1.65+/-0.08
+        CH3OH: 1.2-0.3+0.8
+        NH3: 0.31-0.05+0.08
+        CH4: 0.211+/-0.011
 used reference values: ['McClure', 'Dartois']
 AICE label: 'AICE (this work)'
-save results: yes
+save results: no
 output file: J110621-aice.csv
