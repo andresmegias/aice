@@ -23,6 +23,7 @@ import pandas as pd
 import richvalues as rv
 import scipy.interpolate
 import matplotlib.pyplot as plt
+warnings.simplefilter('ignore', category=RuntimeWarning)
 
 # Functions.
 
