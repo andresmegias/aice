@@ -1,13 +1,11 @@
 input spectrum: '../../spectra/astro/J110621/J110621-c-s.txt'
 model weights: '../training/models/aice-weights.npy'
-wavenumber range (/cm): [3751., 980., 1.]
-resolution (/cm): 1.
-saturated regions (/cm): 'auto'
+# saturated regions (/cm): 'auto'
 spectrum vertical range: [-0.4, 11.2]
 molecular fraction range: [0., 0.7]
 normalization: 'total'
 show predictions for all submodels: no
-propagate observational uncertainties: no
+propagate observational uncertainties: yes
 reference values:
     McClure et al. (2023):
         temp. (K): 11-1+2
