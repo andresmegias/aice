@@ -15,11 +15,11 @@ merging:
     show full original spectra: no
     flux units: 'mJy'
     use logarithmic scale for flux: no
-    output spectral variable: 'wavenumber'
-    show signal-to-noise: no
+    output spectral variable: 'wavelength'
+    show signal-to-noise: yes
     show spectral spacing: yes
-    show resolving power: no
-    new spectral range (/cm): [4001, 480, 1]
+    show resolving power: yes
+    # new spectral range (/cm): [4001, 480, 1]
     colors:
         NIRCam: 'brown'
         NIRSpec: 'lightcoral'
@@ -60,13 +60,14 @@ silicate removal:
     OpTool path: '~/Applications/optool/optool'
     input file: 'NIR38-c.txt'
     input spectral variable: 'wavenumber'
-    silicate file: 'NIR38-silicate.csv'
+    # silicate file: 'NIR38-silicate.csv'
     range (μm): [7.8, 15.0]
+    fit offset: yes
     fit regions (μm):
         - [8.3, 8.7]
         - [10.0, 10.4]
     composition:
-        - pyr-mg70 (pyroxene): 0.60  # 0.60
-        - ol-mg50 (olivine): 0.30  # 0.30
+        - pyr-mg70 (pyroxene)  # 0.60
+        - ol-mg50 (olivine)  # 0.40
     grain size (μm): 1.0
-    output file: 'NIR38-c-s.txt'
+    output file: 'NIR38-c-s2.txt'

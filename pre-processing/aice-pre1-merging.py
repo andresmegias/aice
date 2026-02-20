@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 -------------------------------------------------
-Automatic Ice Composition Estimator (AICE)  v 1.0
+Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Pre-processing module 1 - Spectra merging
 
 Andrés Megías
 """
 
-config_file = 'NIR38.yaml'
+config_file = 'J110621.yaml'
 
 # Libraries.
 import os
@@ -656,7 +656,7 @@ _, y, y_unc, _ = spectrum_new.T
 x = x_new
 plt.errorbar(x, y, y_unc, color='black', ecolor='gray', lw=1.,
              zorder=3., drawstyle='steps-mid', label='merged')
-plt.axhline(y=0, color='black', ls='--', lw=0.8)
+plt.axhline(y=0, color='black', ls='-', lw=0.8)
 if use_logscale:
     ymin = np.nanmin(np.abs(y[y>0]))
     plt.ylim(bottom=ymin/2)
@@ -665,6 +665,7 @@ plt.ylabel(f'spectral flux density ({flux_units})')
 plt.title(config_file.replace('.yaml', ''), pad=10, fontweight='bold')
 plt.legend()
 plt.margins(x=0.02)
+# plt.ylim(bottom=0.)
 ax.invert_xaxis()
 xlims = plt.xlim()
 wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -742,9 +743,9 @@ if show_signal_to_noise:
     ax.yaxis.set_minor_locator(plt.LogLocator(base=10., subs=np.arange(2, 10)*0.1,
                                               numticks=100))
     ax.yaxis.set_major_formatter(plt.ScalarFormatter())
-    for yi in (10., 100.):
+    for yi in (1., 10., 100.):
         plt.axhline(y=yi, color='gray', ls='--', lw=0.4)
-    plt.axhline(y=1., color='black', ls='--', lw=0.8)
+    # plt.axhline(y=1., color='black', ls='--', lw=0.8)
     plt.axvline(x=0., color='black', ls='--', lw=0.8)
     ax.tick_params(axis='y', which='both', right=True)
     plt.legend(loc='lower right', fontsize='small')

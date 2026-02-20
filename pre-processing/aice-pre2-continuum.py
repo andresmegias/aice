@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 -------------------------------------------------
-Automatic Ice Composition Estimator (AICE)  v 1.0
+Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Pre-processing module 2 - Continuum fit
 
@@ -10,7 +10,7 @@ Andrés Megías
 """
 
 # Configuration file.
-config_file = 'J110621.yaml'
+config_file = 'NIR38.yaml'
 
 # Libraries.
 import os
@@ -222,17 +222,23 @@ cont_flux_res = np.interp(wavelength, cont_wavelength, cont_flux)
 # Optical depth.
 with np.errstate(invalid='ignore'):
     absorbance = -np.log10(flux / cont_flux_res)
+if not use_accurate_uncs or show_approx_uncs:
+    absorbance_unc = flux_unc / flux / np.log(10)
+    if not show_approx_uncs:
+        abs_absorbance = np.abs(absorbance)
+        mask = ((absorbance > 0.5*np.max(absorbance)) & (absorbance_unc > 0.5*abs_absorbance)
+                | (absorbance - absorbance_unc < -np.nanmedian(abs_absorbance)))
+        # absorbance[mask] = np.nan
+        absorbance_unc[mask] = np.nan
+        absorbance_rv = rv.RichArray(absorbance, absorbance_unc)
 if use_accurate_uncs:
     print('Propagating observational uncertainties...')
-    flux_rv = rv.RichArray(flux, flux_unc, domains=[0,np.inf])
+    flux_rv = rv.RichArray(flux, flux_unc)
     with np.errstate(invalid='ignore'):
         absorbance_rv = rv.function_with_rich_arrays('-np.log10({}/{})',
                 [flux_rv, rv.RichArray(cont_flux_res)], elementwise=True,
                     consider_intervs=False, len_samples=800)
     print()
-else:
-    absorbance_unc = flux_unc / flux / np.log(10)
-    absorbance_rv = rv.RichArray(absorbance, absorbance_unc)
 wavenumber = 1e4 / wavelength
 cont_wavenumber = 1e4 / cont_wavelength
 
@@ -256,12 +262,15 @@ plt.margins(x=0.)
 plt.xlim(plt.xlim()[::-1])
 plt.xlabel('wavenumber (cm$^{-1}$)')
 plt.yscale('log')
-plt.ylabel('spectral flux (mJy)')
+plt.ylabel('spectral flux density (mJy)')
 plt.legend(fontsize='small', loc='lower right')
 ax = plt.gca()
 ax2 = ax.secondary_xaxis('top', functions=(xaxis_conversion, xaxis_conversion))
-wavelength_ticks = [1, 1.5, 2, 2.5, 3, 4, 5, 7, 10, 15, 30]
-ax2.set_xticks(wavelength_ticks, wavelength_ticks)
+wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 25, 30, 40, 50, 100]
+wavelength_ticklabels = [1, 2, 3, 4, 5, 6, 7, 8, '', 10, '', 12, '', '', 15,
+                         '', '', '', '', 20, '', 30, '', 50, 100]
+ax2.set_xticks(wavelength_ticks, wavelength_ticklabels)
 ax2.set_xlabel('wavelength (μm)', labelpad=6, fontsize=9)
 
 plt.subplot(2,1,2, sharex=ax)
@@ -272,10 +281,9 @@ if show_approx_uncs:
     optdepth_unc = flux_unc / flux
     plt.errorbar(wavenumber+3e-4, absorbance, absorbance_unc, fmt='.-',
                  color='chocolate', ecolor='brown', alpha=0.5, zorder=1.5,
-                 drawstyle='steps-mid')
+                 drawstyle='steps-mid', label='(approx. uncertainties)')
     plt.ylim(ylims)
-    plt.errorbar([], [], [], fmt='.', alpha=0.6, color='chocolate',
-                 ecolor='brown', label='(approx. uncertainties)')
+    plt.legend(fontsize='small', loc='lower right')
 for (x1,x2) in all_regions:
     for (fc, ec) in zip(['none', 'gray'], ['gray', 'none']):
         plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)

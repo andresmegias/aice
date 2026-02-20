@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 -------------------------------------------------
-Automatic Ice Composition Estimator (AICE)  v 1.0
+Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Pre-processing module 3 - Silicate fit
 
@@ -85,7 +85,7 @@ silicate_spectral_variable = options['silicate spectral variable']
 silicate_intensity_variable = options['silicate intensity variable']
 composition = options['composition']
 grain_size = options['grain size (μm)']
-fit_offset = options['fit offset'] if 'fit offset' in options else True
+fit_offset = options['fit offset']
 optool_path = options['OpTool path']
 output_file = options['output file']
 if not optool_path.endswith(' '):
@@ -141,10 +141,10 @@ absorbance = y
 absorbance_uncs = dy
 absorbance_rv = rv.RichArray(absorbance, absorbance_uncs)
 wavelength = 1e4 / wavenumber
-if 'xrange (μm)' in options:
-    xrange = options['xrange (μm)']
-elif 'xrange (/cm)' in options:
-    x1x2 = options['xrange (/cm)']
+if 'range (μm)' in options:
+    xrange = options['range (μm)']
+elif 'range (/cm)' in options:
+    x1x2 = options['range (/cm)']
     x1, x2 = min(x1x2), max(x1x2)
     xrange = [1e4 / x2, 1e4 / x1]
 else:
@@ -258,17 +258,19 @@ if fit_silicate:
     fitted_sf = params[0]
     if fit_offset:
         fitted_off = params[1]
-    if len(params) > 2:
-        fitted_fracs = params[2:]
-        fitted_fracs = np.append(fitted_fracs, 1 - fitted_fracs.sum())
+        if fit_fracs and len(params) > 2:
+            fracs = params[2:]
+            fracs = np.append(fracs, 1 - fracs.sum())
     else:
-        fitted_fracs = [1.] if fit_fracs else fracs
+        if fit_fracs and len(params) > 1:
+            fracs = params[1:]
+            fracs = np.append(fracs, 1 - fracs.sum())
     print('\nFitted parameters:')
     print('- Scale factor: {:.3f}'.format(fitted_sf))
     if fit_offset:
         print('- Offset: {:.3f}'.format(fitted_off))
     if fit_fracs:
-        for (comp, frac) in zip(comps, fitted_fracs):
+        for (comp, frac) in zip(comps, fracs):
             print('- {} fraction: {:.0f} %'.format(comp.capitalize(), 100*frac))
     print()      
 
@@ -298,7 +300,8 @@ else:
     sil_absorbance = y
     
 # Silicate subtraction.
-sil_absorbance_interp = np.interp(wavelength, sil_wavelength, sil_absorbance)
+sil_absorbance_interp = np.interp(wavelength, sil_wavelength, sil_absorbance,
+                                  left=0., right=0.)
 absorbance_corr = absorbance - sil_absorbance_interp
 wavenumber_ = wavenumber.copy()
 mask = wavelength <= np.max(sil_wavelength)
@@ -312,17 +315,20 @@ sil_wavenumber = 1e4 / sil_wavelength
 
 #%% Plots.
 
+figsize_ = (figsize[0], figsize[0]/2)
 plt.close('all')
-plt.figure(1, figsize=figsize)
+plt.figure(1, figsize=figsize_)
 
-plt.subplot(2,1,1)
 plt.axvspan(wavenumber_[-1], wavenumber_[-1], color='gray', alpha=0.1,
             label='regions of the fit')
 plt.plot(sil_wavenumber, sil_absorbance, color='chocolate', alpha=0.8,
          zorder=3., label='fitted silicate')
 rv.errorbar(wavenumber_, absorbance_rv, fmt='.-', alpha=0.6, color='black',
             ecolor='gray', ms=1., lw=1., drawstyle='steps-mid')
-for (x1,x2) in regions:
+rv.errorbar(wavenumber, absorbance_corr_rv, fmt='.-', ms=1., lw=1.,
+            color='dimgray', ecolor='lightgray', zorder=1., drawstyle='steps-mid')
+plt.errorbar([], [], [], color='dimgray', ecolor='lightgray', lw=1.5, label='residual')
+for (x1, x2) in regions:
     for (fc, ec) in zip(['gray', 'none'], ['none', 'gray']):
         plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)
 plt.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
@@ -334,25 +340,16 @@ plt.ylabel('absorbance')
 ax1 = ax = plt.gca()
 ax.invert_yaxis()
 ax2 = ax.secondary_xaxis('top', functions=(xaxis_conversion, xaxis_conversion))
-wavelength_ticks = [2.5, 3, 4, 5, 7, 10, 15, 30]
-ax2.set_xticks(wavelength_ticks, wavelength_ticks)
+wavelength_ticks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 25, 30, 40, 50, 100]
+wavelength_ticklabels = [1, 2, 3, 4, 5, 6, 7, 8, '', 10, '', 12, '', '', 15,
+                         '', '', '', '', 20, '', 30, '', 50, 100]
+ax2.set_xticks(wavelength_ticks, wavelength_ticklabels)
 ax2.set_xlabel('wavelength (μm)', labelpad=6, fontsize=9)
 if fit_silicate:
-    for (comp, frac) in zip(comps, fitted_fracs):
+    for (comp, frac) in zip(comps, fracs):
         plt.plot([], alpha=0., label='{}: {:.0f} %'.format(comp, 100*frac))
 plt.legend(fontsize='small', loc='lower right')
-
-plt.subplot(2,1,2, sharex=ax)
-rv.errorbar(wavenumber, absorbance_corr_rv/np.log(10), fmt='.-', ms=1., lw=1.,
-            color='black', ecolor='gray', alpha=0.6, drawstyle='steps-mid')
-for (x1,x2) in regions:
-    for (fc, ec) in zip(['gray', 'none'], ['none', 'gray']):
-        plt.axvspan(1e4/x1, 1e4/x2, facecolor=fc, edgecolor=ec, hatch='/', alpha=0.1)
-plt.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
-plt.xlabel('wavenumber (cm$^{-1}$)')
-plt.ylabel('corrected absorbance')
-ax = plt.gca()
-ax.invert_yaxis()
 
 plt.suptitle(name, fontweight='bold')
 plt.tight_layout()
