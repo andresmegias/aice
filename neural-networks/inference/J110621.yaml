@@ -1,5 +1,5 @@
 input spectrum: '../../spectra/astro/J110621/J110621-c-s.txt'
-model weights: '../training/models/aice-weights.npy'
+model weights: '../training/models/aice-model.pkl'
 # saturated regions (/cm): 'auto'
 spectrum vertical range: [-0.4, 11.2]
 molecular fraction range: [0., 0.7]
