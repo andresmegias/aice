@@ -298,9 +298,9 @@ plt.tight_layout()  # h_pad = 0
 
 #%% Saving of plot and files.
 
-path = os.path.join(folder, 'continuumfit.png')
-plt.savefig(path)
-print(f'Saved plot in {path}.')
+# path = os.path.join(folder, 'continuumfit.png')
+# plt.savefig(path)
+# print(f'Saved plot in {path}.')
 
 path = os.path.join(folder, f'{name}-cont.txt')
 np.savetxt(path, np.array([cont_wavenumber, cont_flux]).T,
