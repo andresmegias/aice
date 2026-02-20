@@ -1,0 +1,44 @@
+Model: aice
+
+variable: 'NH3'
+spectral range (/cm): (980.0, 4000.0)
+spectral spacing (/cm): 1.0
+spectral resolution (/cm): 1.0
+use linear combinations dataset in training/validation: True/True
+simulate saturation in training/validation: False/False
+training fraction for laboratory: 0.8
+training fraction for linear combinations: 0.8
+maximum number of epochs: 160
+number of batches: 15
+dropout probability: 0.3
+
+Structure:
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Layer (type)                    ┃ Output Shape           ┃       Param # ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ input_layer_7 (InputLayer)      │ (None, 3021)           │             0 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_28 (Dense)                │ (None, 120)            │       362,640 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_21          │ (None, 120)            │           480 │
+│ (BatchNormalization)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_7 (Dropout)             │ (None, 120)            │             0 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_29 (Dense)                │ (None, 60)             │         7,260 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_22          │ (None, 60)             │           240 │
+│ (BatchNormalization)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_30 (Dense)                │ (None, 30)             │         1,830 │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_23          │ (None, 30)             │           120 │
+│ (BatchNormalization)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_31 (Dense)                │ (None, 1)              │            31 │
+└─────────────────────────────────┴────────────────────────┴───────────────┘
+ Total params: 1,116,965 (4.26 MB)
+ Trainable params: 372,181 (1.42 MB)
+ Non-trainable params: 420 (1.64 KB)
+ Optimizer params: 744,364 (2.84 MB)
+
