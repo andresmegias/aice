@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 -------------------------------------------------
-Automatic Ice Composition Estimator (AICE)  v 1.0
+Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Interactive Toolkit
 
