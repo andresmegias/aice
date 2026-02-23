@@ -10,7 +10,7 @@ Andrés Megías.
 """
 
 # AICE parameters.
-model_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice2-lite-model.pkl'
+model_path = '../neural-networks/training/models/aice2-model.pkl'
 # Matplotlib backend.
 backend = 'qtagg'
 # Graphical options.
