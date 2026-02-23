@@ -123,17 +123,17 @@ initial_time = time.time()
 
 # Options for the training.
 random_seeds = [1]  # [1,2,3,4,5,6,7,8,9,10]
-laboratory_dataset_path = 'datasets/aice2/training-dataset-laboratory.pkl'
+laboratory_dataset_path = 'datasets/aice/training-dataset-laboratory.pkl'
 lincombs_dataset_path = 'datasets/aice/training-dataset-lincombs.pkl'
-model_name = 'aice2'
+model_name = 'aice'
 train_nn = True
-save_results = False
+save_results = True
 variables =  ['temp', 'H2O']  # ['temp', 'H2O', 'CO', 'CO2', 'CH3OH', 'NH3', 'CH4']
 formatted_names = {'H2O': r'${\rm H_2O}$', 'CO': 'CO', 'CO2': r'${\rm CO_2}$',
                    'CH3OH': r'${\rm CH_3OH}$', 'NH3': r'${\rm NH_3}$',
                    'CH4': r'${\rm CH_4}$', 'temp': 'temp. (K)'}
-wavenumber_points = np.arange(980, 3751., 1.)
-use_custom_losses = True
+wavenumber_points = np.arange(980, 4001., 1.)
+use_custom_losses = False
 use_laboratory_dataset = True
 use_lincombs_dataset = False
 use_lincombs_in_validation = True
@@ -142,8 +142,8 @@ simulate_saturation = False
 simulate_saturation_in_validation = False
 use_saturated_data_for_validation_errors = False
 saturation_levels = [0.2, 0.4, 0.6]
-num_lincombs = 282 // 3
-f = training_fraction = 0.9
+num_lincombs = 282
+f = training_fraction = 0.8
 f_lc = training_fraction_lc = 0.8
 num_epochs = 160
 num_batches = {'temp': 7, 'H2O': 6, 'CO': 12, 'CO2': 6,
