@@ -146,12 +146,9 @@ num_lincombs = 282
 f = training_fraction = 0.8
 f_lc = training_fraction_lc = 0.8
 num_epochs = 160
-num_batches = {'temp': 7, 'H2O': 6, 'CO': 12, 'CO2': 6,
-               'CH3OH': 6, 'NH3': 8, 'CH4': 8}
-dropout_prob = {'temp': 0.05, 'H2O': 0.10, 'CO': 0.20, 'CO2': 0.10,
-                'CH3OH': 0.05, 'NH3': 0.15, 'CH4': 0.10}
-relu_negative_slope = {'temp': 0.5, 'H2O': 0., 'CO': 0, 'CO2': 0.,
-                       'CH3OH': 0., 'NH3': 0., 'CH4': 0.}
+num_batches = 8
+dropout_prob = 0.1
+relu_negative_slope = 0.0
 fixed_train_spectra = []
 # Some checks.
 if num_lincombs == 0:
