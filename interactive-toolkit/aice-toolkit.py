@@ -5,15 +5,15 @@
 Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Interactive Toolkit
+v 1.1.2
 
 Andrés Megías.
 """
 
-# AICE parameters.
-model_path = '../neural-networks/training/models/aice2-model.pkl'
-# Matplotlib backend.
-backend = 'qtagg'
+# AICE model.
+model_path = '../neural-networks/training/models/aice-model.pkl'
 # Graphical options.
+matplotlib_backend = 'qtagg'
 colors = {'edited': 'mediumslateblue', 'baseline': 'darkorange',
           'selected-points': 'crimson', 'lines': 'tab:red'}
 colormaps = {'original': {'name': 'brg', 'offset': 0.0, 'scale': 0.5},
@@ -29,27 +29,24 @@ smooth_size = 5
 # Number of actions stored in cache for undo/redo.
 max_actions_stored = 80
 # Predefined spectral windows.
-species_windows = {
+species_windows = {              # feel free to modify this or add more species
     'H2O': [[3780, 2805], [2570, 2010], [1850, 1200], [1030, 480]],
     'CO': [[2165, 2120]],
     'CO2': [[3723, 3695], [3612, 3588], [2396, 2316], [687, 636]],
     'CH3OH': [[3560, 2712], [1178, 982]],
     'CH4': [[3103, 2968], [1334, 1274]],
     'NH3': [[3638, 2928], [1223, 976]],
-    'H2CO': [[3040, 2780], [1780, 1690], [1530, 1470], [1280, 1150]],
-    'C2H5NH2': [[3450, 3040], [3010, 2750], [1670, 1220], [1180, 800]],
-    '13CO': [[2110, 2075]],
     }
 # Predefined macros.
 predefined_macros = {
-    'M1':
+    'M1':      # it's just a test, feel free to change this and add more macros
         """
-        - smooth (median) :
+        - smooth :
             smoothing factor : 15
         - modify windows :
             windows : 'auto'
         - estimate baseline :
-            smoothing factor : 45
+            smoothing factor : 40
         - reduce
         - modify windows :
             windows :
@@ -63,33 +60,6 @@ predefined_macros = {
             - (1235.12, 891.20)
         - smooth :
             smoothing factor : 15
-        """,
-    'M2':
-        """
-        - smooth (median) :
-            smoothing factor : 75
-        - modify windows :
-            windows : 'auto'
-        - estimate baseline :
-            smoothing factor : 45
-        - reduce
-        - modify windows :
-            windows :
-            - (2980.00, 2945.30)
-            - (1300.70, 1200.19)
-            - (899.49, 600.09)
-        - remove/interpolate :
-            smoothing factor: 1
-        - modify windows :
-            windows :
-            - (1235.12, 891.20)
-        - smooth :
-            smoothing factor : 15
-        - modify windows :
-            windows :
-            - (6000.00, 3500.00)
-        - smooth :
-            smoothing factor: 45
         """
     }
 
@@ -113,8 +83,8 @@ from matplotlib.ticker import ScalarFormatter, LogLocator
 from matplotlib.backend_bases import MouseEvent, KeyEvent
 from scipy.interpolate import UnivariateSpline, PchipInterpolator
 from scipy.stats import median_abs_deviation
-plt.matplotlib.use(backend)
-if backend == 'qtagg':
+plt.matplotlib.use(matplotlib_backend)
+if matplotlib_backend == 'qtagg':
     from PyQt5.QtWidgets import QInputDialog
 warnings.simplefilter('ignore', scipy.optimize.OptimizeWarning)
 
@@ -146,7 +116,8 @@ def fit_baseline(x, y, smooth_size=1, windows=None, interpolation='spline'):
     if interpolation not in ('spline', 'pchip'):
         raise Exception("Wrong interpolation type. Should be 'spline' or 'pchip'.")
     if interpolation == 'pchip':
-        y = rv.rolling_function(np.nanmedian, y, smooth_size)
+        y = (pd.Series(y).rolling(smooth_size, min_periods=1, center=True)
+             .apply(np.nanmedian).values)
     np_isfinite_y = np.isfinite(y)
     if windows is None:
         mask = np_isfinite_y
@@ -161,14 +132,15 @@ def fit_baseline(x, y, smooth_size=1, windows=None, interpolation='spline'):
     if interpolation == 'pchip':
         spl = PchipInterpolator(x_, y_)
     elif interpolation == 'spline':
-        y_s = rv.rolling_function(np.median, y_, smooth_size)
+        y_s = (pd.Series(y_).rolling(smooth_size, min_periods=1, center=True)
+               .median().values)
         s = np.nansum((y_s-y_)**2)
         k = len(y_)-1 if len(y_) <= 3 else 3
         spl = UnivariateSpline(x_, y_, s=s, k=k)
     yb = spl(x)
     return yb
 
-def create_baseline(x, y, p, interpolation='pchip'):
+def create_baseline(x, y, points, interpolation='pchip'):
     """
     Create a baseline from the input points.
 
@@ -176,11 +148,8 @@ def create_baseline(x, y, p, interpolation='pchip'):
     ----------
     x, y : arrays
         Data to fit the baseline.
-    p : list / array (2, N)
+    points : list / array (N, 2)
         Reference points for the baseline.
-    smooth_size : int, optional
-        Size of the filter applied for the fitting of the baseline.
-        Only valid if interpolation = 'pchip'.
     interpolation : str, optional
         Type of interpolation.
         Possible values are 'spline' or 'pchip' (default).
@@ -190,7 +159,7 @@ def create_baseline(x, y, p, interpolation='pchip'):
     yb : array
         Resulting baseline.
     """ 
-    x_, y_ = np.array(p).T
+    x_, y_ = np.array(points).T
     x_, inds = np.unique(x_, return_index=True)
     y_ = y_[inds]
     if interpolation == 'pchip':
@@ -200,12 +169,6 @@ def create_baseline(x, y, p, interpolation='pchip'):
         spl = UnivariateSpline(x_, y_, s=0., k=k)
     yb = spl(x)
     return yb
-
-def axis_conversion(x):
-    """Axis conversion from wavenumber to wavelength and viceversa."""
-    with np.errstate(divide='ignore'):
-        y = 1e4 / x
-    return y
 
 def get_windows_from_points(selected_points):
     """Format the selected points into windows."""
@@ -407,7 +370,7 @@ def extract_spectrum(x, y, windows):
     return y_new
 
 def aice_model(wavenumber, absorbance, weights, model_info,
-               correct_co=False, desaturate_spectrum=False):
+               correct_co=False, correct_temp=True, desaturate_spectrum=False):
     """
     Neural network model of AICE.
     
@@ -430,34 +393,35 @@ def aice_model(wavenumber, absorbance, weights, model_info,
     prediction_df : dataframe (float)
         Predictions for the temperature and molecular fractions.
     """
-    relu = lambda x: np.maximum(0, x)
-    def sigmoid(x):
-        with np.errstate(all='ignore'):
-            y = 1 / (1 + np.exp(-x))
-        return y
-    def nn_model(x, weights, end_act=relu):
+    relu = lambda x: np.maximum(0., x)
+    leaky_relu = lambda x,a: np.maximum(a*x, x)
+    sigmoid = lambda x: 1 / (1 + np.exp(-x))
+    def nn_model(x, weights, end_act_function, relu_negslope=0.):
         """Multi-layer perceptron of AICE."""
+        act_function = (relu if relu_negslope == 0.
+                        else lambda x: leaky_relu(x, relu_negslope))
         w = weights
-        w1, b1 = w[0], w[1]
-        ga1, be1, m1, s1 = w[2], w[3], w[4], w[5]
-        w2, b2 = w[6], w[7]
-        ga2, be2, m2, s2 = w[8], w[9], w[10], w[11]
-        w3, b3 = w[12], w[13]
-        ga3, be3, m3, s3 = w[14], w[15], w[16], w[17]
-        w4, b4 = w[18], w[19]  
-        e = 1e-3
-        a1 = relu(np.dot(w1.T, x) + b1)
+        w1, b1 = w[0], w[1]                             # linear combination
+        ga1, be1, m1, s1 = w[2], w[3], w[4], w[5]       # batch normalization
+        w2, b2 = w[6], w[7]                             # linear combination
+        ga2, be2, m2, s2 = w[8], w[9], w[10], w[11]     # batch normalization
+        w3, b3 = w[12], w[13]                           # linear combination
+        ga3, be3, m3, s3 = w[14], w[15], w[16], w[17]   # batch normalization
+        w4, b4 = w[18], w[19]                           # linear combination
+        e = 1e-3                          # threhsold for batch normalization
+        a1 = act_function(np.dot(w1.T, x) + b1)
         a1 = ga1 * (a1 - m1) / (s1 + e)**0.5 + be1
-        a2 = relu(np.dot(w2.T, a1) + b2)
+        a2 = act_function(np.dot(w2.T, a1) + b2)
         a2 = ga2 * (a2 - m2) / (s2 + e)**0.5 + be2
-        a3 = relu(np.dot(w3.T, a2) + b3)
+        a3 = act_function(np.dot(w3.T, a2) + b3)
         a3 = ga3 * (a3 - m3) / (s3 + e)**0.5 + be3
-        y = end_act(np.dot(w4.T, a3) + b4)
+        y = end_act_function(np.dot(w4.T, a3) + b4)
         return y
-    wavenumber_aice = model_info['wavenumber']
+    wavenumber_aice = model_info['wavenumber_array']
     aice_resolution = model_info['resolution']
     aice_spacing = model_info['spacing']
     aice_variables = model_info['variables']
+    relu_negative_slopes = model_info['relu_negative_slopes']
     absorbance_ = copy.copy(absorbance)
     if desaturate_spectrum:
         absorbance_ = correct_saturation(wavenumber, absorbance)
@@ -468,14 +432,17 @@ def aice_model(wavenumber, absorbance, weights, model_info,
     size = round(aice_resolution / aice_spacing)
     absorbance_aice = pd.Series(absorbance_aice).rolling(size, min_periods=1,
                                                      center=True).mean().values
+    absorbance_aice = np.nan_to_num(absorbance_aice, nan=0.)
     absorbance_aice /= np.mean(absorbance_aice)
     absorbance_aice = np.nan_to_num(absorbance_aice, nan=0.)
     results = []
     for j in range(weights.shape[0]):
         yj = np.zeros(weights.shape[1])
-        for i in range(len(yj)):
-            end_act = relu if i == 0 else sigmoid
-            yj[i] = nn_model(absorbance_aice, weights[j,i], end_act)[0]
+        for (i, var) in enumerate(aice_variables):
+            end_act_function = relu if i == 0 else sigmoid
+            relu_negslope = relu_negative_slopes[var]
+            yj[i] = nn_model(absorbance_aice, weights[j,i],
+                             end_act_function, relu_negslope)[0]
         results += [yj]
     results = np.array(results)
     if correct_co and 'CO' in aice_variables and 'CO2' in aice_variables:
@@ -490,8 +457,10 @@ def aice_model(wavenumber, absorbance, weights, model_info,
                                                 windows)
             preds_co_co2 = []
             for j in range(weights.shape[0]):
-                pred_co = nn_model(absorbance_aice_, weights[j,idx_co], sigmoid)[0]
-                pred_co2 = nn_model(absorbance_aice_, weights[j,idx_co2], sigmoid)[0]
+                pred_co = nn_model(absorbance_aice_, weights[j,idx_co],
+                                   sigmoid, relu_negative_slopes['CO'])[0]
+                pred_co2 = nn_model(absorbance_aice_, weights[j,idx_co2],
+                                    sigmoid, relu_negative_slopes['CO2'])[0]
                 preds_co_co2 += [pred_co / pred_co2]
             preds_co = np.array(preds_co_co2) * preds_co2
             results[:,idx_co] = preds_co
@@ -709,19 +678,68 @@ def fill_spectrum(x, y, y_unc=None, threshold=3.):
 
 def custom_input(prompt, window_title=''):
     """Custom input call that uses Qt if using qtagg backend."""
-    if backend == 'qtagg':
+    if matplotlib_backend == 'qtagg':
         prompt = prompt.replace('- ', '')
         text, _ = QInputDialog.getText(None, window_title, prompt)
     else:
         text = input(prompt)
     return text
 
+# Axis conversion functions.
+def xaxis_conversion(x):
+    """Convert from wavenumber to wavelength and viceversa."""
+    y = np.divide(1e4, x, where=x!=0.)
+    return y
+def absorbance_to_optdepth(x):
+    """Convert from absorbance to optical depth."""
+    y = x * np.log(10)
+    return y
+def optdepth_to_absorbance(x):
+    """Convert from optical depth to absirbance."""
+    y = x / np.log(10)
+    return y
+def transmittance_to_optdepth(x):
+    """Convert from transmittance to optical depth."""
+    y = -np.log(np.clip(x, np.exp(-5.), None))
+    return y
+def optdepth_to_transmittance(x):
+    """Convert from optical depth to transmittance."""
+    y = np.exp(-x)
+    return y
+# Asis limits functions.
+def ylim_changed(ax):
+    """Prevent y axis to go below 0."""
+    ylims = ax.get_ylim()
+    y1, y2 = min(ylims), max(ylims)
+    if y1 < 0.:
+        y1 = 0.
+        ylims = [y1, y2] if ylims[1] > ylims[0] else [y2, y1]
+        ax.set_ylim(ylims)
+def xlim_changed(ax):
+    """Prevent x axis to go below 0."""
+    xlims = ax.get_xlim()
+    x1, x2 = min(xlims), max(xlims)
+    if x1 < 1e-6:
+        x1 = 1e-6
+        xlims = [x1, x2] if xlims[1] > xlims[0] else [x2, x1]
+        ax.set_xlim(xlims)
+# Ticks for seconday axes.
+wavelength_ticks = [1.5, 1.7, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8,
+                    10, 12, 15, 20, 30, 50, 300]  # μm
+wavenumber_ticks = [20000, 10000, 6000, 4000, 3000, 2500, 2000, 1500, 1200,
+                    1000, 800, 700, 600, 500, 400, 350, 300, 250, 200,
+                    150, 120, 100, 90, 80, 70, 60, 50, 45, 40, 35, 30]  # /cm
+wavenumber_ticks = [20000, 10000, 6000, 4000, 3000, 2500, 2000, 1500, 1200,
+                    1000, 800, 700, 600, 500, 400, 350, 300, 250, 200,
+                    150, 120, 100, 90, 80, 70, 60, 50, 45, 40, 35, 30]  # /cm
+extra_wavenumber_ticks = [20000, 6000, 3000, 2500]  # /cm
+
 # Removing default keymaps for interactive plot.
 keymaps = ('back', 'copy', 'forward', 'fullscreen', 'grid', 'grid_minor',
            'help', 'home', 'pan', 'quit', 'quit_all', 'save', 'xscale',
            'yscale', 'zoom')
 for keymap in keymaps:            
-    plt.rcParams.update({'keymap.' + keymap: []})
+    plt.rcParams.update({f'keymap.{keymap}': []})
     
 # Folder separator.
 sep = '\\' if platform.system() == 'Windows' else '/'
@@ -732,39 +750,34 @@ def plot_data(spectra, spectra_old, active_indices, idx,
               using_manual_baseline_mode):
     """Plot the input spectra."""
     global x_min, x_max, x_lims, y_lims
-    global use_logscale, use_microns, invert_yaxis, use_optical_depth
+    global use_logscale, use_microns, invert_yaxis
     global spectra_colors, spectra_colors_old
     plt.clf()
-    factor = np.log(10) if use_optical_depth else 1.
     for (i,spectrum_old) in enumerate(spectra_old):
         x = spectrum_old['x'] if not use_microns else 1e4 / spectrum_old['x']
-        y = spectrum_old['y'] * factor
+        y = spectrum_old['y']
         plt.plot(x, y, color='dimgray', drawstyle=ds, lw=dlw, alpha=0.4,
                  zorder=2.4)
     x = spectra_old[idx]['x'] if not use_microns else 1e4 / spectra_old[idx]['x']
-    y = spectra_old[idx]['y'] * factor
+    y = spectra_old[idx]['y']
     y_unc = copy.copy(spectra_old[idx]['y-unc'])
-    if y_unc is not None:
-        y_unc *= factor
     plt.errorbar(x, y, y_unc, color='black', ecolor=[0.7]*3, drawstyle=ds,
                  lw=dlw, label='original spectrum', zorder=2.6) 
     spectrum = spectra[idx]
     if 'y-base' in spectrum:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
-        y = spectrum['y-base'] * factor
+        y = spectrum['y-base']
         plt.plot(x, y, linestyle='--', dashes=[6.,6.], lw=0.6*dlw, zorder=3.0,
                  color=colors['baseline'], drawstyle=ds, label='computed baseline')
     if 'y-lines' in spectrum:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
-        y = spectrum['y-lines'] * factor
+        y = spectrum['y-lines']
         plt.plot(x, y, linestyle='-', lw=0.6*dlw, zorder=3.0, drawstyle=ds,
                  color=colors['lines'], label='fitted lines')
     if spectrum['edited']:
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
-        y = spectrum['y'] * factor
+        y = spectrum['y']
         y_unc = copy.copy(spectrum['y-unc'])
-        if y_unc is not None:
-            y_unc *= factor
         plt.errorbar(x, y, y_unc, color=colors['edited'], ecolor='gray',
                      drawstyle=ds, lw=0.8*dlw, zorder=2.8, label='edited spectrum')
     for i in all_indices:
@@ -776,23 +789,20 @@ def plot_data(spectra, spectra_old, active_indices, idx,
         else:
             color = 'gray'
         x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
-        y = spectrum['y'] * factor
+        y = spectrum['y']
         plt.plot(x, y, color=color, drawstyle=ds, lw=0.8*dlw,
                  alpha=0.3, zorder=2.5)
         if 'y-base' in spectrum and i in all_indices:
             x = spectrum['x'] if not use_microns else 1e4 / spectrum['x']
-            y = spectrum['y-base'] * factor
+            y = spectrum['y-base']
             plt.plot(x, y, '--', lw=0.8*dlw, color='darkorange',
                      alpha=0.2, zorder=2.5)
             
     ylabel = variable_y
-    y_lims_ = list(np.array(y_lims) * factor)
-    if ylabel == 'absorbance' and use_optical_depth:
-        ylabel = 'optical depth'
-    elif ylabel.startswith('absorption coefficient'):
+    if ylabel.startswith('absorption coefficient'):
         ylabel = ylabel.replace('(cm2)', '(cm$^2$)')
     plt.xlim(x_lims)
-    plt.ylim(y_lims_)
+    plt.ylim(y_lims) 
     if invert_yaxis:
         plt.gca().invert_yaxis()
     plt.axhline(y=0., color='black', lw=0.5)
@@ -809,62 +819,68 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     else:
         plt.plot([], '.', color=colors['selected-points'],
                  label='reference points')
+        
     ax = plt.gca()
-    if use_logscale:
+    if variable_y == 'absorbance':
+        ax2 = ax.secondary_yaxis('right', functions=(absorbance_to_optdepth,
+                                                     optdepth_to_absorbance))
+        ax2.set_ylabel('optical depth', labelpad=10.)
+    elif variable_y == 'transmittance':
+        ax2 = ax.secondary_yaxis('right', functions=(transmittance_to_optdepth,
+                                                     optdepth_to_transmittance))
+        ax2.set_ylabel('optical depth', labelpad=10.)
+    else:
+        ax.tick_params(axis='y', which='both', right=True)
+    
+    if use_logscale and 'abs' not in variable_y:
         yy = np.concatenate([spectrum['y'] for spectrum in spectra])
         yy = yy[np.isfinite(yy)]
-        linthresh = (1e3*np.min(np.abs(yy[yy>0])) if 'abs' not in variable_y
-                     else 100*noise_level)
+        linthresh = 1e3 * np.min(np.babs(yy[yy>0]))
         linthresh = min(0.3*np.max(yy), linthresh)
         if 'abs' in variable_y:
             linthresh = max(0.04*np.max(yy), linthresh)
         linthresh = 10**(np.floor(np.log(linthresh)))
-        plt.yscale('symlog', linthresh=linthresh)
+        ax.set_yscale('symlog', linthresh=linthresh)
         y1, y2 = plt.ylim()
         log_locator = LogLocator(base=10., subs='auto')
-        y1_ = 10**(round(np.log(abs(y1))))
         y2_ = 10**(round(np.log(y2)))
         minor_ticks_pos = log_locator.tick_values(linthresh, 1e3*y2_)
-        minor_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y1_)
+        minor_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y2_)
         minor_ticks = np.append(minor_ticks_pos, minor_ticks_neg)
         ax.set_yticks(minor_ticks, minor=True)
         log_locator = LogLocator(base=10.)
         major_ticks_pos = log_locator.tick_values(linthresh, 1e3*y2_)
-        major_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y1_)
+        major_ticks_neg = -log_locator.tick_values(linthresh, 1e4*y2_)
         major_ticks = np.concatenate([major_ticks_pos, major_ticks_neg, [0.]])
         major_ticks = np.array(sorted(major_ticks))
         ax.set_yticks(major_ticks, minor=False)
         for (tick, label) in zip(ax.get_yticks(), ax.get_yticklabels()):
             if abs(tick) == linthresh/10:
                 label.set_visible(False)
-        plt.ylim(y1, y2)
+        if 'flux' in variable_y:
+            y1 = 0.
+        ax.set_ylim(y1, y2)
     else:
         ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     loc = ('upper left' if 'abs' in variable_y and not invert_yaxis
            or variable_y == 'transmittance' and invert_yaxis else 'lower left')
     plt.legend(loc=loc)
-    plt.title(spectra_names[idx], fontweight='bold', pad=12.)
+    plt.title(spectra_names[idx], fontweight='bold', pad=15.)
     ax = plt.gca()
     if not use_microns:
         ax.invert_xaxis()
-    ax2 = ax.secondary_xaxis('top', functions=(axis_conversion, axis_conversion))
+    ax2 = ax.secondary_xaxis('top', functions=(xaxis_conversion, xaxis_conversion))
     if not use_microns:
-        xticks2 = [1.5, 1.7, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8,
-                   10, 12, 15, 20, 30, 50, 300] # μm
+        xticks2 = wavelength_ticks
         xlabel2 = 'wavelength (μm)'
     else:
-        xticks2 = [20000, 10000, 6000,
-                   4000, 3000, 2500, 2000, 1500, 1200,
-                   1000, 800, 700, 600, 500,
-                   400, 350, 300, 250, 200, 150, 120,
-                   100, 90, 80, 70, 60, 50, 45, 40, 35, 30]
+        xticks2 = copy.copy(wavenumber_ticks)
         if x_lims[0] < 3. and x_lims[1] > 6.:
-            for x in [20000, 6000, 3000, 2500]:
+            for x in extra_wavenumber_ticks:
                 xticks2.remove(x)
         xlabel2 = 'wavenumber (cm$^{-1}$)'
     ax2.set_xticks(xticks2, xticks2)
     ax2.set_xlabel(xlabel2, labelpad=6., fontsize=9.)
-    plt.tight_layout()
     loc = ((0.98, 0.96) if 'abs' in variable_y and not invert_yaxis
            or variable_y == 'transmittance' and invert_yaxis else (0.98, 0.125))
     plt.text(*loc, '      AICE Interactive Toolkit' '\n ' ,
@@ -872,7 +888,13 @@ def plot_data(spectra, spectra_old, active_indices, idx,
              bbox=dict(edgecolor=[0.8]*3, facecolor='white', alpha=0.7))
     plt.text(*loc, ' \n' 'check terminal for instructions',
              ha='right', va='top', transform=ax.transAxes)
-    plt.gca().set_facecolor([0.9]*3)
+    
+    ax = plt.gca()
+    ax.set_facecolor([0.9]*3)
+    
+    ax.callbacks.connect('xlim_changed', xlim_changed)
+    if variable_y == 'transmittance':
+        ax.callbacks.connect('ylim_changed', ylim_changed)
 
 def plot_windows(selected_points, use_microns):
     """Plot the current selected windows."""
@@ -948,6 +970,7 @@ def subtract_lines(spectra, active_indices, windows):
     for i in active_indices:
         spectrum = spectra[i]
         if 'y-lines' in spectrum:
+            x = spectrum['x']
             y = spectrum['y']
             y_unc = spectrum['y-unc']
             y_lines = np.nan_to_num(spectrum['y-lines'], nan=0.)
@@ -1534,9 +1557,16 @@ def compute_absorbance(spectra):
         for (i, spectrum) in enumerate(spectra):
             y = spectrum['y']
             y_unc = spectrum['y-unc']
-            y_new = -np.log10(y)
-            y_unc_new = (np.abs(y_unc / y) / np.log(10)
-                         if y_unc is not None else None)
+            if y_unc is None:
+                y_new = -np.log10(x)
+                y_unc_new = None
+            else:
+                print('Propagating...')
+                yr = rv.RichArray(y, y_unc)
+                yr_new = yr.function(lambda x: -np.log10(x), len_samples=1200,
+                                     consider_intervs=False)
+                y_new = yr_new.mains
+                y_unc_new = yr_new.uncs.mean(axis=1)
             spectra[i]['y'] = y_new
             spectra[i]['y-unc'] = y_unc_new
             if 'y-base' in spectrum:
@@ -1548,7 +1578,8 @@ def compute_transmittance(spectra):
         for (i, spectrum) in enumerate(spectra):
             y = spectrum['y']
             y_unc = spectrum['y-unc']
-            y_new = 10**(-y)
+            if y_unc is None:
+                y_new = 10**(-y)
             y_unc_new = (y_new * np.log(10) * y_unc
                          if y_unc is not None else None)
             spectra[i]['y'] = y_new
@@ -1812,11 +1843,8 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
     else:
         use_csv_format_for_output = False
     variable_x_ = 'wavelength (μm)' if use_microns else 'wavenumber (/cm)'
-    if variable_y == 'absorbance' and use_optical_depth:
-        variable_y = 'optical depth'
     abbreviations = {'spectral flux density': 'flux dens.',
-                     'transmittance': 'transm.',
-                     'absorbance': 'abs.', 'optical depth': 'opt. depth',
+                     'transmittance': 'transm.', 'absorbance': 'abs.',
                      'absorption coefficient (cm2)': 'abs. coeff. (cm2)'}
     if use_csv_format_for_output:
         if not filename.endswith('.csv'):
@@ -1850,8 +1878,6 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
             if use_microns:
                 x_i = 1e4/x_i[::-1]
                 y_i = y_i[::-1]
-            if variable_y == 'absorbance' and use_optical_depth:
-                y_i *= np.log(10)
             y_i = np.interp(x, x_i, y_i)
             new_df[column] = y_i
         nd = max([len(xi.split('.')[-1]) if '.' in xi else 0
@@ -1868,11 +1894,6 @@ def save_files(spectra, active_indices, spectra_names, original_filemames,
         x = spectrum['x']
         y = spectrum[yvar]
         y_unc = spectrum['y-unc'] if yvar == 'y' else None
-        if variable_y == 'absorbance' and use_optical_depth:
-            y *= np.log(10)
-            if y_unc is not None:
-                y_unc *= np.log(10)
-            variable_y_ = 'optical_depth'
         if use_microns:
             x = 1e4/x
         variable_x_ = variable_x_.replace(' ', '_')
@@ -2070,7 +2091,7 @@ def press_key(event):
     global baseline_smooth_size, interp_smooth_size, smooth_size, noise_level
     global using_joint_editing_mode, using_manual_baseline_mode, variable_y
     global selected_points, x_lims, y_lims, old_x_lims, rel_margin_y
-    global use_logscale, use_optical_depth, use_microns, invert_yaxis
+    global use_logscale, use_microns, invert_yaxis
     global in_macro, k, macro_actions, copied_data, x_min, x_max
     global spectra_colors, spectra_colors_old
     global waiting_for_click, click_action_options
@@ -2165,8 +2186,6 @@ def press_key(event):
             save_action_record(action_log, spectra, filename, output_data_info)
     x_lims = list(sorted(plt.xlim()))
     y_lims = list(sorted(plt.ylim()))
-    if use_optical_depth:
-        y_lims = list(np.array(y_lims) / np.log(10))
     if using_joint_editing_mode and len(all_indices) == 1:
         using_joint_editing_mode = False
     if not using_joint_editing_mode:
@@ -2190,6 +2209,8 @@ def press_key(event):
             y_lims = calculate_ylims([spectra[idx]], x_lims_, 1., 99., rel_margin_y)
         if y_lims == prev_y_lims:
             y_lims = calculate_robust_ylims(spectra, x_lims_, 0., 100., rel_margin_y)
+        if variable_y == 'transmittance':
+            y_lims[0] = max(0., y_lims[0])
     elif event.key == 'ctrl+-':
         if 'flux' not in variable_y:
             invert_yaxis = not invert_yaxis
@@ -2381,17 +2402,17 @@ def press_key(event):
                                'smoothing factor': factor}
     elif event.key in ('n', 'N'):
         if not in_macro:
-            factor = compute_noise(spectra, active_indices)
+            noise_level = compute_noise(spectra, active_indices)
         if event.key == 'N':
-            factor = custom_input('- Enter noise level: ', 'Noise (N)')
+            text = custom_input('- Enter noise level: ', 'Noise (N)')
             try:
-                factor = float(text)
+                noise_level = float(text)
             except:
-                factor = 0.
-        if factor != 0.:
-            add_noise(spectra, active_indices, selected_points, factor)
-            print(f'Added normal noise with a standard deviation of {factor:.3e}.')
-            action_info = {'action': 'add noise', 'noise level': f'{factor:.3e}'}
+                noise_level = 0.
+        if noise_level != 0.:
+            add_noise(spectra, active_indices, selected_points, noise_level)
+            print(f'Added normal noise with a standard deviation of {noise_level:.3e}.')
+            action_info = {'action': 'add noise', 'noise level': f'{noise_level:.3e}'}
     elif event.key in ('b', 'B', 'ctrl+b', 'ctrl+B'):
         if len(selected_points) < 2:
             print('Error: No windows selected.')
@@ -2461,7 +2482,9 @@ def press_key(event):
             variable_y = 'transmittance'
             spectra_old = copy.deepcopy(spectra)
             x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
-            y_lims = calculate_robust_ylims(spectra, x_lims_, rel_margin_y)
+            y_lims = calculate_robust_ylims(spectra, x_lims_, perc1=0., perc2=99,
+                                            rel_margin=rel_margin_y)
+            y_lims[0] = 0.
             for i in active_indices:
                 del spectra[i]['y-base']
         action_info = {'action': 'reduce'}
@@ -2583,8 +2606,6 @@ def press_key(event):
                         if use_microns:
                             width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
                             center = 1e4 / center
-                        if use_optical_depth:
-                            height /= np.log(10) 
                         add_gaussian(spectra, active_indices, windows,
                                      clicked_borders, [center, width, height])
                         center, width, height = params
@@ -2614,20 +2635,22 @@ def press_key(event):
                 factor = 1.
                 area_variable = 'area'
                 area_units = '/cm'
+                bandstrength_msg = ''
             elif 'I' in event.key:
                 text = custom_input('- Introduce the band strength (cm): ',
                                     'Integrate (I)')
                 try:
                    factor =  float(text) / np.log(10)
+                   bandstrength_msg = f' (band strength: {text} cm)'
                 except:
                     return
                 area_variable = 'column density'
                 area_units = '/cm2'
             print('- Click two continuum points for estimating the baseline'
-                  ' (press 0 to skip or Enter to automatically set them.).')
+                  ' (press 0 to skip or Enter to automatically set them).')
             click_action_options = {'key': event.key, 'clicked_borders': [],
                     'area_variable': area_variable, 'area_units': area_units,
-                    'factor': factor}
+                    'factor': factor, 'bandstrength_msg': bandstrength_msg}
             waiting_for_click = True
         else:
             clicked_borders = click_action_options['clicked_borders']
@@ -2637,6 +2660,7 @@ def press_key(event):
                 factor = click_action_options['factor']
                 area_variable = click_action_options['area_variable']
                 area_units = click_action_options['area_units']
+                bandstrength_msg = click_action_options['bandstrength_msg']
                 integrate_fitted_lines = 'ctrl' in key
                 if clicked_borders in (0, None):
                     x = spectra[idx]['x']
@@ -2652,8 +2676,8 @@ def press_key(event):
                     clicked_borders = [[x1, y1], [x2, y2]]
                 area = integrate_spectrum(spectra[idx], selected_points,
                            factor, clicked_borders, integrate_fitted_lines)
-                print('Integrated {}: {:.3e} {}'.format(area_variable,
-                                                        area, area_units))
+                print('Integrated {}: {:.3e} {}{}'.format(area_variable,
+                                          area, area_units, bandstrength_msg))
     elif event.key in ('f', 'F', 'ctrl+f', 'ctrl+F'):
         if event.key in ('F', 'ctrl+F') and 'abs' not in variable_y:
             print('Error: Spectrum must be in absorbance in order to'
@@ -2850,37 +2874,23 @@ def press_key(event):
             action_info = {'action': f'resample ({kind})',
                            f'{variable} ({units}) array (start, end, step)':
                                list(params)}
-    elif event.key in ('a', 'd'):
-        if variable_y == 'absorbance':
-            if event.key == 'a' and use_optical_depth:
-                use_optical_depth = False
-            elif event.key == 'd' and not use_optical_depth:
-                use_optical_depth = True
-        elif variable_y != 'transmittance':
-            desired_variable_y = ('absorbance' if event.key == 'a'
-                                  else 'optical depth')
+    elif event.key == 'a':
+        if variable_y != 'transmittance':
             print('Error: Spectra must be in transmittance to convert to'
-                  f' {desired_variable_y}.')
+                  ' absorbance / optical depth.')
         else:
             compute_absorbance(spectra)
             variable_y = 'absorbance'
-            use_optical_depth = True if event.key == 'd' else False
             use_logscale = False
             invert_yaxis = not invert_yaxis
             x_lims_ = [1e4/x_lims[1], 1e4/x_lims[0]] if use_microns else x_lims
             y_lims = calculate_ylims(spectra, x_lims_, 1., 99., rel_margin_y)
             noise_level = compute_noise(spectra, active_indices)
             spectra_old = copy.deepcopy(spectra)
-            if event.key == 'a':
-                print('Converted to absorbance.')
-                action_info = {'action': 'convert to absorbance'}
-            else:
-                print('Converted to optical depth.')
-                action_info = {'action': 'convert to optical depth'}
-    elif event.key == 't':
-        if variable_y == 'transmittance':
-            pass
-        elif variable_y != 'absorbance':
+            print('Converted to absorbance / optical depth.')
+            action_info = {'action': 'convert to absorbance'}
+    elif event.key == 't' and variable_y == 'absorbance':
+        if variable_y != 'absorbance':
             print('Error: Spectra must be in absorbance / optical depth to'
                   ' convert to transmittance.')
         else:
@@ -2964,7 +2974,7 @@ def press_key(event):
             in_macro = True
     elif event.key in ('ctrl+z', 'cmd+z', 'ctrl+Z', 'cmd+Z','ctrl+<', 'cmd+<'):
         if 'z' in event.key and ilog == 0:
-            print('Error: Cannot undone.')
+            print('Error: Cannot undo.')
         elif 'z' not in event.key and ilog == len(data_log)-1:
             print('Error: Cannot redo.')
         else:
@@ -3073,13 +3083,13 @@ try:
     x1, x2 = min(x1x2), max(x1x2)
     dx = model_info['spacing']
     x_aice = np.arange(x1, x2, dx)
-    model_info['wavenumber'] = x_aice
+    model_info['wavenumber_array'] = x_aice
 except:
     weights = None
 
 # Reading of the arguments.
 variable_y = 'absorbance'
-use_optical_depth = False
+input_in_optical_depth = False
 use_microns = False
 args = copy.copy(sys.argv)
 i = 0
@@ -3087,7 +3097,7 @@ while i < len(args):
     arg = args[i]
     if arg == '-od':
         variable_y = 'absorbance'
-        use_optical_depth = True
+        input_in_optical_depth = True
         del args[i]
     elif arg == '-T':
         variable_y = 'transmittance'
@@ -3112,7 +3122,7 @@ else:
         arg = args[i]
         if arg == '-od':
             variable_y = 'absorbance'
-            use_optical_depth = True
+            input_in_optical_depth = True
             del args[i]
         if arg == '-T':
             variable_y = 'transmittance'
@@ -3211,6 +3221,9 @@ while i < len(filenames):
             y = data[inds,j+1]
         else:
             y = y[inds]
+        if input_in_optical_depth:
+            y /= np.log(10)
+            y_unc /= np.log(10)
         x_, y_, y_unc_ = fill_spectrum(x, y, y_unc)
         spectrum = {'x': x_, 'y': y_, 'y-unc': y_unc_, 'edited': False}
         spectra += [spectrum]
@@ -3285,6 +3298,8 @@ margin = rel_margin_x * xrange
 x_lims = [x_min - margin, x_max + margin]
 y_lims = calculate_robust_ylims(spectra, x_lims, perc1=0.1, perc2=99.5,
                                 rel_margin=1.5*rel_margin_y)
+if variable_y == 'transmittance':
+    y_lims[0] = max(0., y_lims[0])
 
 # Info file.
 variable_x = 'wavelength (μm)' if use_microns else 'wavenumber (/cm)' 
@@ -3317,9 +3332,9 @@ Instructions
 - If spectra are in transmission, press A or D to convert to absorbance or
   optical depth. In absorbance or optical depth, press D or A to switch the
   scale, or press T to convert to transmission.
-- Press M to switch between wavenumber and wavelength. Press L to switch
-  between linear and logarithmic scale. If spectra are not in flux, press
-  Ctrl+'-' to invert the vertical axis.
+- Press M to switch between wavenumber and wavelength. If spectra are in flux,
+  press L to switch between linear and logarithmic scale. If spectra are not
+  in flux, press Ctrl+'-' to invert the vertical axis.
 - Press S to smooth the data in the selected windows. If your press Shift+S,
   you can write the smoothing factor in the terminal.
 - Press X to remove and interpolate the selected regions, or Shift+X to specify
@@ -3401,6 +3416,7 @@ action_log = [{'action': 'start'}]
 macro_actions = []
 
 plt.figure('AICE Interactive Toolkit', figsize=(9.,5.))
+plt.subplots_adjust(top=0.80, bottom=0.15, left=0.1, right=0.90)
 plot_data(spectra, spectra_old, active_indices, idx, using_manual_baseline_mode)
 fig = plt.gcf()
 fig.canvas.mpl_connect('button_press_event', click1)
