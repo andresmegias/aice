@@ -5,13 +5,13 @@
 Automatic Ice Composition Estimator (AICE)  v 1.1
 ------------------------------------------
 Interactive Toolkit
-v 1.1.2
+v 1.1.3
 
 Andrés Megías.
 """
 
 # AICE model.
-model_path = '../neural-networks/training/models/aice-model.pkl'
+model_path = '/Users/andres/Proyectos/AICE/neural-networks/training/models/aice2-model.pkl'
 # Graphical options.
 matplotlib_backend = 'qtagg'
 colors = {'edited': 'mediumslateblue', 'baseline': 'darkorange',
@@ -370,7 +370,7 @@ def extract_spectrum(x, y, windows):
     return y_new
 
 def aice_model(wavenumber, absorbance, weights, model_info,
-               correct_co=False, correct_temp=True, desaturate_spectrum=False):
+               correct_co=True, correct_temp=True, desaturate_spectrum=False):
     """
     Neural network model of AICE.
     
@@ -835,7 +835,7 @@ def plot_data(spectra, spectra_old, active_indices, idx,
     if use_logscale and 'abs' not in variable_y:
         yy = np.concatenate([spectrum['y'] for spectrum in spectra])
         yy = yy[np.isfinite(yy)]
-        linthresh = 1e3 * np.min(np.babs(yy[yy>0]))
+        linthresh = 1e3 * np.min(np.abs(yy[yy>0]))
         linthresh = min(0.3*np.max(yy), linthresh)
         if 'abs' in variable_y:
             linthresh = max(0.04*np.max(yy), linthresh)
@@ -1161,11 +1161,6 @@ def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
             center, width, height = fit_params
         else:
             width, height = fit_params
-        if use_microns:
-            width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
-            center = 1e4 / center
-        print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
-              f'width {units1}, {width:.{nd}f}; height{units2}, {height:.2{ft}}.')
         y_lines = (spectrum['y-lines'] if 'y-lines' in spectrum
                    else np.full(len(x), np.nan))
         y_lines = np.nan_to_num(y_lines, nan=0.)
@@ -1177,6 +1172,11 @@ def fit_gaussian(spectra, active_indices, windows, line_borders, center=None):
         y_lines[mask] += y_f
         y_lines[y_lines == 0.] = np.nan
         spectra[j]['y-lines'] = y_lines
+        if use_microns:
+            width = 1e4 / (center - width/2) - 1e4 / (center + width/2)
+            center = 1e4 / center
+        print(f'Gaussian parameters: center {units1}, {center:.{nd}f}; '
+              f'width {units1}, {width:.{nd}f}; height{units2}, {height:.2{ft}}.')
 
 def gaussians(x, ssf, *params, centers=None):
     """
@@ -3153,7 +3153,8 @@ for (folder, filename) in zip(folders, filenames):
     else:
         os.chdir(folder)
     filename = (filename.replace(r'\(', '(').replace(r'\)', ')')
-                .replace(r'\:', ':').replace(r'\?', '?'))
+                .replace(r'\:', ':').replace(r'\,', ',').replace(r'\?', '?')
+                .replace(r'\ ', ' '))
     filenames_i = list([str(pp) for pp in pathlib.Path('.').glob(filename)])
     folders_new = np.append(folders_new, folder)
     filenames_new =  np.append(filenames_new, filenames_i)
